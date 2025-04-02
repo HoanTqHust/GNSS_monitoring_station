@@ -37,12 +37,20 @@ def get_data():
     mon_span_datas = []
     nav_sat_datas = []
 
-    while not ubx_processor.MON_SPAN.empty():
-        label, raw_data, parsed_data= ubx_processor.MON_SPAN.get(timeout=1)
+    while not ubx_processor.MON_SPAN_1.empty():
+        label, raw_data, parsed_data= ubx_processor.MON_SPAN_1.get(timeout=5)
         print(parsed_data)
 
-    while not ubx_processor.NAV_SAT.empty():
-        label, raw_data, parsed_data= ubx_processor.NAV_SAT.get(timeout=1)
+    while not ubx_processor.NAV_SAT_1.empty():
+        label, raw_data, parsed_data= ubx_processor.NAV_SAT_1.get(timeout=5)
+        print(parsed_data)
+
+    while not ubx_processor.MON_SPAN_2.empty():
+        label, raw_data, parsed_data= ubx_processor.MON_SPAN_2.get(timeout=5)
+        print(parsed_data)
+
+    while not ubx_processor.NAV_SAT_2.empty():
+        label, raw_data, parsed_data= ubx_processor.NAV_SAT_2.get(timeout=5)
         print(parsed_data)
 
     return jsonify({"mon_span": mon_span_datas, "nav_sat": nav_sat_datas})
