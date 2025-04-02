@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPS Data Monitor</title>
+    <script>
+        function fetchData() {
+            fetch("/data")
+                .then(response => response.json())
+                .then(data => {
+                    let monSpanDiv = document.getElementById("mon_span");
+                    let navSatDiv = document.getElementById("nav_sat");
+
+                    monSpanDiv.innerHTML = "<h3>MON-SPAN</h3>";
+                    navSatDiv.innerHTML = "<h3>NAV-SAT</h3>";
+
+                    data.mon_span.forEach(msg => {
+                        monSpanDiv.innerHTML += `<p>${msg.timestamp} - ${msg.data}</p>`;
+                    });
+
+                    data.nav_sat.forEach(msg => {
+                        navSatDiv.innerHTML += `<p>${msg.timestamp} - ${msg.data}</p>`;
+                    });
+                });
+        }
+
+        setInterval(fetchData, 2000); // Cập nhật mỗi 2 giây
+    </script>
+</head>
+<body>
+    <h1>GPS Data Monitor</h1>
+    <div id="mon_span"></div>
+    <div id="nav_sat"></div>
+</body>
+</html>
