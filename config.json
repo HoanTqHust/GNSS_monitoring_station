@@ -1,4 +1,4 @@
 {
-  "ubx1": "/dev/tty.usbmodem21201",
-  "ubx2": "/dev/tty.usbmodem21401"
+  "ubx1":"COM5",
+  "ubx2":"COM6"
 }
