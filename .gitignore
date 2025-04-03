@@ -3,3 +3,9 @@ venv/
 
 # Ignore the config.json file
 config.json
+# ignore files which are used to test the server
+servertest.py
+UBX0_2.ubx
+test.py
+test02.py
+templates/index01.html
