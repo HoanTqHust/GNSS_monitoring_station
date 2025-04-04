@@ -10,7 +10,7 @@
     document.addEventListener("DOMContentLoaded", function () {
       // server localhost port 5000
 
-      const socket =io("http://localhost:5000");
+      const socket =io("http://127.0.0.1:5000");
       
       socket.on("connect", () => {
         console.log("Connected to server");
@@ -58,9 +58,9 @@
     }
 
 
-    // setInterval(refreshSkyplot, 10000); 
+    // setInterval(refreshSkyplot, 10000);
     // setInterval(fetchData, 10000);
-    // setInterval(refreshSpectrumAnalyzer, 10000); 
+    // setInterval(refreshSpectrumAnalyzer, 10000);
   </script>
 </head>
 
