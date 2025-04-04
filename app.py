@@ -35,8 +35,10 @@ with open("config.json", "r") as file:
 port1 = "/dev/tty.usbmodem21401"
 port2 = "/dev/tty.usbmodem21201"
 # get data from serial COM5 and COM6 (COM6 haven't set)
-ser = serial.Serial(port2, baudrate=38400, timeout=1)
-ubr = UBXReader(ser, protfilter=2)
+ser1 = serial.Serial(port1, baudrate=115200, timeout=1)
+ser2 = serial.Serial(port2, baudrate=115200, timeout=1)
+ubr1 = UBXReader(ser1, protfilter=2)
+ubr2 = UBXReader(ser2, protfilter=2)
 
 
 def processData(parsed_data):
@@ -170,34 +172,56 @@ def encode_image(buf):
 
 # background socket
 def background_thread():
+    timer = 0
     while True:
         try:
-            satellites = []
-            raw_data, parsed_data = ubr.read()
             cpu_load = psutil.cpu_percent(interval=0.005)
-            if parsed_data and parsed_data.identity == "NAV-SAT":
-                satellites.extend(processData(parsed_data))
-                skyplot_buf = create_skyplot(satellites)
-                skyplot_data = encode_image(skyplot_buf)
-            else:
-                skyplot_data = ""
-            mon_span_data = None
-            if parsed_data and parsed_data.identity == "MON-SPAN":
-                mon_span_data = processDataMonSpan(parsed_data)
-                spectrum_buf = create_spectrum_plot(mon_span_data)
-                spectrum_data = encode_image(spectrum_buf)
-            else:
-                spectrum_data = ""
-            if skyplot_data == "" and spectrum_data == "":
-                print("no data update")
-            else:
-                socketio.emit('update_image', {
-                    'skyplot': "data:image/png;base64," + skyplot_data,
-                    'spectrum': "data:image/png;base64," + spectrum_data,
-                    'cpu_load': cpu_load
+            timer += 1
+
+            # === Device 1 ===
+            _, parsed_data_1 = ubr1.read()
+            skyplot_data_1 = ""
+            spectrum_data_1 = ""
+
+            if parsed_data_1 and parsed_data_1.identity == "NAV-SAT":
+                satellites1 = processData(parsed_data_1)
+                buf1 = create_skyplot(satellites1)
+                skyplot_data_1 = encode_image(buf1)
+
+            if parsed_data_1 and parsed_data_1.identity == "MON-SPAN":
+                mon_span_data_1 = processDataMonSpan(parsed_data_1)
+                buf1 = create_spectrum_plot(mon_span_data_1)
+                spectrum_data_1 = encode_image(buf1)
+
+            # === Device 2 ===
+            _, parsed_data_2 = ubr2.read()
+            skyplot_data_2 = ""
+            spectrum_data_2 = ""
+
+            if parsed_data_2 and parsed_data_2.identity == "NAV-SAT":
+                satellites2 = processData(parsed_data_2)
+                buf2 = create_skyplot(satellites2)
+                skyplot_data_2 = encode_image(buf2)
+
+            if parsed_data_2 and parsed_data_2.identity == "MON-SPAN":
+                mon_span_data_2 = processDataMonSpan(parsed_data_2)
+                buf2 = create_spectrum_plot(mon_span_data_2)
+                spectrum_data_2 = encode_image(buf2)
+
+            # Send update every 20 loops
+            if True:
+                timer = 0
+                socketio.emit("update_image", {
+                    "skyplot1": "data:image/png;base64," + skyplot_data_1,
+                    "spectrum1": "data:image/png;base64," + spectrum_data_1,
+                    "skyplot2": "data:image/png;base64," + skyplot_data_2,
+                    "spectrum2": "data:image/png;base64," + spectrum_data_2,
+                    "cpu_load": cpu_load
                 })
         except Exception as e:
             print("Error in background thread:", e)
+
+
 
 socketio.start_background_task(background_thread)
 try:

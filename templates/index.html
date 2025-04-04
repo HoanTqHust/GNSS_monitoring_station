@@ -1,84 +1,71 @@
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GPS Data Monitor</title>
-  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
-  <script>
-    document.addEventListener("DOMContentLoaded", function () {
-      // server localhost port 5000
-
-      const socket =io("http://localhost:5000");
-      
-      socket.on("connect", () => {
-        console.log("Connected to server");
-        console.log("Socket initialized:", socket);
-      });
-      
-      socket.on("update_image", (data) => {
-        console.log("socket running");
-        console.log("Received update_images event:", data);
-        const skyplotImg = document.getElementById("skyplotImg");
-        console.log("data.skyplot:", data.skyplot); 
-        console.log("data.spectrum:", data.spectrum);
-        console.log("CPU load: ", data.cpu_load);
-        if (data.skyplot !="data:image/png;base64,") {
-          skyplotImg.src = data.skyplot;
-        }
-        const spectrumImg = document.getElementById("spectrumImg");
-        if (data.spectrum != "data:image/png;base64,") {
-          spectrumImg.src = data.spectrum;
-        }
-        const cpuLoadDisplay = document.getElementById("cpuLoadDisplay");
-        if(data.cpu_load != "") {
-          cpuLoadDisplay.innerText = "CPU Load: " + data.cpu_load + "%";
-        }
-      });
-    });
-    async function refreshSkyplot() {
-      const img = document.getElementById("skyplotImg");
-      img.src = "/skyplot?time=" + new Date().getTime();
-    }
-    async function refreshSpectrumAnalyzer() {
-      const img_spectrum = document.getElementById("spectrumImg");
-      // Thêm timestamp vào URL để tránh cache
-      img_spectrum.src = "/spectrum?time=" + new Date().getTime();
-    }
-    async function fetchData() {
-      try {
-        const response = await fetch("/data");
-        const data = await response.json();
-        console.log("Fetched data:", data);
-        // Xử lý dữ liệu nếu cần, bạn có thể cập nhật giao diện (DOM) tại đây.
-      } catch (error) {
-        console.error("Error fetching data:", error);
-      }
-    }
-    // setInterval(refreshSkyplot, 10000);
-    // setInterval(fetchData, 10000);
-    // setInterval(refreshSpectrumAnalyzer, 10000);
-  </script>
-</head>
-
 <body>
-  <h1>GPS Data Monitor</h1>
-  <!-- spectrum analy -->
-  <div id="mon_span_1">
-    <img id="spectrumImg" src="/spectrum" alt="Spectrum Analyzer" width="400" height="400">
-  </div>
-  <!-- mon_span_2 haven't been used yet -->
-  <div id="mon_span_2"></div>
-  <div id="nav_sat_1">
-    <img id="skyplotImg" src="/skyplot" alt="Skyplot" width="400" height="400">
-  </div>
-  <!-- nav_sat_2 haven't been used yet -->
-  <div id="nav_sat_2"></div>
-  <div>
+<h1>GPS Data Monitor</h1>
+<!-- CPU Load -->
+<div style="text-align: center; margin-top: 20px;">
     <h2>CPU Load</h2>
     <div id="cpuLoadDisplay">Loading...</div>
-  </div>
-</body>
+</div>
 
-</html>
+<div style="display: flex; justify-content: space-around; gap: 20px;">
+    <!-- Column for Device 1 -->
+    <div style="flex: 1; text-align: center;">
+        <h2>Device 1</h2>
+
+        <div id="mon_span_1">
+            <h3>Spectrum</h3>
+            <img id="spectrumImg1" src="" alt="Spectrum Analyzer 1" width="400" height="400">
+        </div>
+
+        <div id="nav_sat_1">
+            <h3>Skyplot</h3>
+            <img id="skyplotImg1" src="" alt="Skyplot 1" width="400" height="400">
+        </div>
+    </div>
+
+    <!-- Column for Device 2 -->
+    <div style="flex: 1; text-align: center;">
+        <h2>Device 2</h2>
+
+        <div id="mon_span_2">
+            <h3>Spectrum</h3>
+            <img id="spectrumImg2" src="" alt="Spectrum Analyzer 2" width="400" height="400">
+        </div>
+
+        <div id="nav_sat_2">
+            <h3>Skyplot</h3>
+            <img id="skyplotImg2" src="" alt="Skyplot 2" width="400" height="400">
+        </div>
+    </div>
+</div>
+
+
+<!-- SocketIO Script -->
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const socket = io("http://127.0.0.1:5000");
+
+        socket.on("connect", () => {
+            console.log("Connected to server");
+        });
+
+        socket.on("update_image", (data) => {
+            if (data.skyplot1 && data.skyplot1 !== "data:image/png;base64,") {
+                document.getElementById("skyplotImg1").src = data.skyplot1;
+            }
+            if (data.skyplot2 && data.skyplot2 !== "data:image/png;base64,") {
+                document.getElementById("skyplotImg2").src = data.skyplot2;
+            }
+            if (data.spectrum1 && data.spectrum1 !== "data:image/png;base64,") {
+                document.getElementById("spectrumImg1").src = data.spectrum1;
+            }
+            if (data.spectrum2 && data.spectrum2 !== "data:image/png;base64,") {
+                document.getElementById("spectrumImg2").src = data.spectrum2;
+            }
+            if (data.cpu_load) {
+                document.getElementById("cpuLoadDisplay").innerText = "CPU Load: " + data.cpu_load + "%";
+            }
+        });
+    });
+</script>
+</body>
