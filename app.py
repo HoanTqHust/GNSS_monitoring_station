@@ -28,15 +28,15 @@ with open("config.json", "r") as file:
     config = json.load(file)
 
 
-# ubx_connector = UBXConnector(config)
-# ubx_connector.start()  
-# ubx_processor = MessageProcessor(ubx_connector.data_queue)
-# ubx_processor.start()
-port1="COM5"
-port2="COM6"
+ubx_connector = UBXConnector(config)
+ubx_connector.start()  
+ubx_processor = MessageProcessor(ubx_connector.data_queue)
+ubx_processor.start()
+# port1="COM5"
+# port2="COM6"
 # get data from serial COM5 and COM6 (COM6 haven't set)
-ser= serial.Serial(port1, baudrate=38400, timeout=1)
-ubr = UBXReader(ser, protfilter=2)
+# ser= serial.Serial(port1, baudrate=38400, timeout=1)
+# ubr = UBXReader(ser, protfilter=2)
 def processData(parsed_data):
     satellites = []
     try:
@@ -160,15 +160,16 @@ def background_thread():
     while True:
         try:
             satellites=[]
-            raw_data, parsed_data = ubr.read()
-            if parsed_data and parsed_data.identity == "NAV-SAT":
+            if not ubx_processor.NAV_SAT_1.empty():
+                label, raw_data, parsed_data = ubx_processor.NAV_SAT_1.get(timeout=5)
                 satellites.extend(processData(parsed_data)) 
                 skyplot_buf = create_skyplot(satellites)
                 skyplot_data = encode_image(skyplot_buf)  
             else :
                 skyplot_data = ""
             mon_span_data = None
-            if parsed_data and parsed_data.identity == "MON-SPAN":
+            if not ubx_processor.MON_SPAN_1.empty():
+                label, raw_data, parsed_data = ubx_processor.MON_SPAN_1.get(timeout=5)
                 mon_span_data = processDataMonSpan(parsed_data)
                 spectrum_buf = create_spectrum_plot(mon_span_data)
                 spectrum_data = encode_image(spectrum_buf)
