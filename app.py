@@ -199,7 +199,6 @@ def background_thread():
         except Exception as e:
             print("Error in background thread:", e)
 
-
 socketio.start_background_task(background_thread)
 try:
     logging.debug("Starting Flask app...")
