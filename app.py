@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 import base64
 import serial
+import psutil
 from flask import Flask, render_template, jsonify, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -53,21 +54,15 @@ def processData(parsed_data):
         print("Error reading UBX data:", e)
     return satellites
 def processDataMonSpan(parsed_data):
-    """
-    Xử lý dữ liệu từ MON-SPAN message và trả về một dictionary chứa các trường cần thiết.
-    Bao gồm cả các mảng dữ liệu phổ (spectrum_01, spectrum_02).
-    """
     mon_span_data = {}
     try:
         if parsed_data and parsed_data.identity == "MON-SPAN":
-            # Lặp qua các thuộc tính không ẩn của parsed_data
             for attr in dir(parsed_data):
                 if not attr.startswith('_'):
                     try:
                         value = getattr(parsed_data, attr)
                         if isinstance(value, (int, float, str)):
                             mon_span_data[attr] = value
-                        # Nếu thuộc tính là list và tên bắt đầu bằng "spectrum_", thêm vào dictionary
                         elif isinstance(value, list) and attr.startswith("spectrum_"):
                             mon_span_data[attr] = value
                     except Exception as e:
@@ -87,7 +82,6 @@ def create_spectrum_plot(mon_span_data):
         n_bins1 = len(spec1)
         span1 = mon_span_data.get("span_01")
         center1 = mon_span_data.get("center_01")
-        # Tính trục tần số cho spec1: từ (center - span/2) đến (center + span/2)
         freq_start1 = center1 - span1 / 2
         freq_end1 = center1 + span1 / 2
         frequencies1 = np.linspace(freq_start1, freq_end1, n_bins1)
@@ -159,6 +153,9 @@ def encode_image(buf):
 def background_thread():
     while True:
         try:
+            cpu_load = psutil.cpu_percent(interval=1)
+            if fix == 1:
+                print("CPU Load:", cpu_load)
             satellites=[]
             if not ubx_processor.NAV_SAT_1.empty():
                 label, raw_data, parsed_data = ubx_processor.NAV_SAT_1.get(timeout=5)
@@ -180,8 +177,10 @@ def background_thread():
             else:
                 socketio.emit('update_image',{
                     'skyplot': "data:image/png;base64,"+skyplot_data,
-                    'spectrum': "data:image/png;base64,"+spectrum_data
+                    'spectrum': "data:image/png;base64,"+spectrum_data,
+                    'cpu_load': cpu_load
             })
+            time.sleep(1)
         except Exception as e:
             print("Error in background thread:", e)
             
