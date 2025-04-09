@@ -4,6 +4,7 @@ import time
 import io
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import matplotlib
 import base64
 import serial
@@ -15,6 +16,28 @@ from connect.connect import UBXConnector
 from process.process import MessageProcessor
 from pyubx2 import UBXReader
 
+
+# ---------- Classes ----------
+class SatelliteData:
+    def __init__(self, parsed_data, i):
+        self.prMes = getattr(parsed_data, f'prMes_{i:02}', None)
+        self.cpMes = getattr(parsed_data, f'cpMes_{i:02}', None)
+        self.doMes = getattr(parsed_data, f'doMes_{i:02}', None)
+        self.gnssId = getattr(parsed_data, f'gnssId_{i:02}', None)
+        self.svId = getattr(parsed_data, f'svId_{i:02}', None)
+        self.sigId = getattr(parsed_data, f'sigId_{i:02}', None)
+
+
+class RAWXData:
+    def __init__(self, parsed_data):
+        self.rcvTow = parsed_data.rcvTow
+        self.week = parsed_data.week
+        self.satData = []
+        for i in range(1, parsed_data.numMeas + 1):
+            self.satData.append(SatelliteData(parsed_data, i))
+
+
+# ---------- Config ----------
 matplotlib.use('Agg')
 matplotlib.rcParams['font.family'] = 'Arial'
 # use fix to fix
@@ -28,6 +51,11 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 with open("config.json", "r") as file:
     config = json.load(file)
 
+BUFFER_SAMPLES = 30
+PLOT_INTERVAL = 2.0  # seconds
+
+combined_samples = []
+
 # ubx_connector = UBXConnector(config)
 # ubx_connector.start()
 # ubx_processor = MessageProcessor(ubx_connector.data_queue)
@@ -39,6 +67,85 @@ ser1 = serial.Serial(port1, baudrate=115200, timeout=1)
 ser2 = serial.Serial(port2, baudrate=115200, timeout=1)
 ubr1 = UBXReader(ser1, protfilter=2)
 ubr2 = UBXReader(ser2, protfilter=2)
+
+
+# ---------- Helper Functions ----------
+def append_with_limit(queue, item, maxlen=BUFFER_SAMPLES):
+    queue.append(item)
+    if len(queue) > maxlen:
+        del queue[0]
+
+
+def calc_pseudorange(rxmRaw, navPvt):
+    ps = np.zeros(32)
+    for sat in rxmRaw.satData:
+        if sat.gnssId == 0 and sat.sigId == 0:  # GPS L1 only
+            try:
+                sv_index = sat.svId - 1
+                ps[sv_index] = sat.cpMes + float(navPvt.nano) * 1e-9 * float(sat.doMes)
+            except:
+                continue
+    return ps, np.zeros(32)
+
+
+def process_and_plot_if_ready():
+    if len(combined_samples) < BUFFER_SAMPLES:
+        return
+
+    print(f"[INFO] Plotting with {BUFFER_SAMPLES} samples")
+
+    dps = np.zeros((BUFFER_SAMPLES, 32))
+    svId_to_idx = {}
+    idx_to_svId = {}
+    sv_counter = 0
+
+    for idx in range(BUFFER_SAMPLES):
+        (_, rawx1, nav1, _, rawx2, nav2) = combined_samples[idx]
+
+        ps1, _ = calc_pseudorange(rawx1, nav1)
+        ps2, _ = calc_pseudorange(rawx2, nav2)
+
+        for i in range(32):
+            if ps1[i] != 0 and ps2[i] != 0:
+                svId = i + 1
+                if svId not in svId_to_idx:
+                    svId_to_idx[svId] = sv_counter
+                    idx_to_svId[sv_counter] = svId
+                    sv_counter += 1
+                dps[idx, svId_to_idx[svId]] = ps1[i] - ps2[i]
+
+        if sv_counter > 0:
+            dps[idx, :] -= dps[idx, 0]
+        dps[idx, :] -= np.round(dps[idx, :])
+
+    valid_columns = np.any(dps != 0, axis=0)
+    dps_trimmed = dps[:, valid_columns]
+    svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx]]
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
+
+    for i, svId in enumerate(svIds):
+        axes[0].plot(dps_trimmed[:, i], label=f'SV {svId}', alpha=0.8)
+
+    axes[0].legend(ncol=4, fontsize=8)
+    axes[0].grid(True)
+    axes[0].set_xlabel('Time Index')
+    axes[0].set_ylabel('Pseudorange Difference (m)')
+    axes[0].set_title('Sliding Window Pseudorange Differences')
+
+    sns.heatmap(dps_trimmed.T, cmap="coolwarm", cbar=True, ax=axes[1], linewidths=0.5)
+    axes[1].set_yticks(np.arange(len(svIds)) + 0.5)
+    axes[1].set_yticklabels([f"SV {svId}" for svId in svIds], rotation=0)
+    axes[1].set_xlabel("Time Index")
+    axes[1].set_ylabel("Satellite SV ID")
+    axes[1].set_title("Heatmap of Pseudorange Differences")
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 
 def processData(parsed_data):
@@ -173,69 +280,91 @@ def encode_image(buf):
 # background socket
 def background_thread():
     timer = 0
+    last_plot_time = time.time()
+    rawx1 = rawx2 = nav1 = nav2 = None
+
+    skyplot_data_1 = ""
+    spectrum_data_1 = ""
+    skyplot_data_2 = ""
+    spectrum_data_2 = ""
     while True:
         try:
+            ts1 = ts2 = time.time()
             cpu_load = psutil.cpu_percent(interval=0.005)
             timer += 1
 
             # === Device 1 ===
             _, parsed_data_1 = ubr1.read()
-            skyplot_data_1 = ""
-            spectrum_data_1 = ""
 
             if parsed_data_1 and parsed_data_1.identity == "NAV-SAT":
-                satellites1 = processData(parsed_data_1)
-                buf1 = create_skyplot(satellites1)
-                skyplot_data_1 = encode_image(buf1)
+                skyplot_data_1 = parsed_data_1
 
             if parsed_data_1 and parsed_data_1.identity == "MON-SPAN":
-                mon_span_data_1 = processDataMonSpan(parsed_data_1)
-                buf1 = create_spectrum_plot(mon_span_data_1)
-                spectrum_data_1 = encode_image(buf1)
+                spectrum_data_1 = parsed_data_1
+
+            if parsed_data_1 and parsed_data_1.identity == "RXM-RAWX":
+                rawx1 = RAWXData(parsed_data_1)
+            if parsed_data_1 and parsed_data_1.identity == "NAV-PVT":
+                nav1 = parsed_data_1
 
             # === Device 2 ===
             _, parsed_data_2 = ubr2.read()
-            skyplot_data_2 = ""
-            spectrum_data_2 = ""
 
             if parsed_data_2 and parsed_data_2.identity == "NAV-SAT":
-                satellites2 = processData(parsed_data_2)
-                buf2 = create_skyplot(satellites2)
-                skyplot_data_2 = encode_image(buf2)
+                skyplot_data_2 = parsed_data_2
 
             if parsed_data_2 and parsed_data_2.identity == "MON-SPAN":
-                mon_span_data_2 = processDataMonSpan(parsed_data_2)
-                buf2 = create_spectrum_plot(mon_span_data_2)
-                spectrum_data_2 = encode_image(buf2)
+                spectrum_data_2 = parsed_data_2
 
-            # Send update every 20 loops
-            if True:
-                timer = 0
-                socketio.emit("update_image", {
-                    "skyplot1": "data:image/png;base64," + skyplot_data_1,
-                    "spectrum1": "data:image/png;base64," + spectrum_data_1,
-                    "skyplot2": "data:image/png;base64," + skyplot_data_2,
-                    "spectrum2": "data:image/png;base64," + spectrum_data_2,
-                    "cpu_load": cpu_load
-                })
+            if parsed_data_2 and parsed_data_2.identity == "RXM-RAWX":
+                rawx2 = RAWXData(parsed_data_2)
+            if parsed_data_2 and parsed_data_2.identity == "NAV-PVT":
+                nav2 = parsed_data_2
+
+                # Append only if both devices have valid RAWX and NAV-PVT
+            if rawx1 and nav1 and rawx2 and nav2:
+                append_with_limit(combined_samples, (ts1, rawx1, nav1, ts2, rawx2, nav2))
+                rawx1 = rawx2 = nav1 = nav2 = None
+
+                # Plot if enough time passed and buffer is full
+                current_time = time.time()
+                dps_plot = ""
+                if current_time - last_plot_time >= PLOT_INTERVAL:
+                    dps_plot_data = process_and_plot_if_ready()
+                    last_plot_time = current_time
+                    dps_plot = encode_image(dps_plot_data)
+
+                if (dps_plot == ""):
+                    print("Dont send")
+                else:
+                    skyplot_1 = encode_image(create_skyplot(processData(skyplot_data_1)))
+                    skyplot_2 = encode_image(create_skyplot(processData(skyplot_data_2)))
+                    spectrum_1 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_1)))
+                    spectrum_2 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_2)))
+                    socketio.emit("update_image", {
+                        "skyplot1": "data:image/png;base64," + skyplot_1,
+                        "spectrum1": "data:image/png;base64," + spectrum_1,
+                        "skyplot2": "data:image/png;base64," + skyplot_2,
+                        "spectrum2": "data:image/png;base64," + spectrum_2,
+                        "cpu_load": cpu_load,
+                        "dps": "data:image/png;base64," + dps_plot,
+                    })
         except Exception as e:
             print("Error in background thread:", e)
-
 
 
 socketio.start_background_task(background_thread)
 try:
     logging.debug("Starting Flask app...")
-    socketio.run(app, port=5000, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
 except KeyboardInterrupt:
     logging.info("Shutting down...")
-
 
 if __name__ == "__main__":
     socketio.start_background_task(background_thread)
     try:
         logging.debug("Starting Flask app...")
-        socketio.run(app, port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         logging.info("Shutting down...")
     # finally:

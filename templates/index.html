@@ -1,71 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GPS Data Monitor</title>
+</head>
 <body>
-<h1>GPS Data Monitor</h1>
-<!-- CPU Load -->
-<div style="text-align: center; margin-top: 20px;">
-    <h2>CPU Load</h2>
-    <div id="cpuLoadDisplay">Loading...</div>
-</div>
+    <h1 style="text-align: center;">GPS Data Monitor</h1>
 
-<div style="display: flex; justify-content: space-around; gap: 20px;">
-    <!-- Column for Device 1 -->
-    <div style="flex: 1; text-align: center;">
-        <h2>Device 1</h2>
+    <!-- CPU Load -->
+    <div style="text-align: center; margin-top: 20px;">
+        <h2>CPU Load</h2>
+        <div id="cpuLoadDisplay">Loading...</div>
+    </div>
 
-        <div id="mon_span_1">
-            <h3>Spectrum</h3>
-            <img id="spectrumImg1" src="" alt="Spectrum Analyzer 1" width="400" height="400">
+    <!-- Pseudorange Difference Plot -->
+    <div style="text-align: center; margin-top: 40px;">
+        <h2>Pseudorange Difference Plot</h2>
+        <img id="dpsPlotImg" src="" alt="Pseudorange Difference Plot" width="800" height="500">
+    </div>
+
+    <!-- Devices Section -->
+    <div style="display: flex; justify-content: space-around; gap: 20px; margin-top: 30px;">
+        <!-- Device 1 -->
+        <div style="flex: 1; text-align: center;">
+            <h2>Device 1</h2>
+
+            <div id="mon_span_1">
+                <h3>Spectrum</h3>
+                <img id="spectrumImg1" src="" alt="Spectrum Analyzer 1" width="400" height="400">
+            </div>
+
+            <div id="nav_sat_1" style="margin-top: 20px;">
+                <h3>Skyplot</h3>
+                <img id="skyplotImg1" src="" alt="Skyplot 1" width="400" height="400">
+            </div>
         </div>
 
-        <div id="nav_sat_1">
-            <h3>Skyplot</h3>
-            <img id="skyplotImg1" src="" alt="Skyplot 1" width="400" height="400">
+        <!-- Device 2 -->
+        <div style="flex: 1; text-align: center;">
+            <h2>Device 2</h2>
+
+            <div id="mon_span_2">
+                <h3>Spectrum</h3>
+                <img id="spectrumImg2" src="" alt="Spectrum Analyzer 2" width="400" height="400">
+            </div>
+
+            <div id="nav_sat_2" style="margin-top: 20px;">
+                <h3>Skyplot</h3>
+                <img id="skyplotImg2" src="" alt="Skyplot 2" width="400" height="400">
+            </div>
         </div>
     </div>
 
-    <!-- Column for Device 2 -->
-    <div style="flex: 1; text-align: center;">
-        <h2>Device 2</h2>
 
-        <div id="mon_span_2">
-            <h3>Spectrum</h3>
-            <img id="spectrumImg2" src="" alt="Spectrum Analyzer 2" width="400" height="400">
-        </div>
+    <!-- SocketIO Script -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const socket = io("http://127.0.0.1:5000");
 
-        <div id="nav_sat_2">
-            <h3>Skyplot</h3>
-            <img id="skyplotImg2" src="" alt="Skyplot 2" width="400" height="400">
-        </div>
-    </div>
-</div>
+            socket.on("connect", () => {
+                console.log("Connected to server");
+            });
 
-
-<!-- SocketIO Script -->
-<script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
-<script>
-    document.addEventListener("DOMContentLoaded", function () {
-        const socket = io("http://127.0.0.1:5000");
-
-        socket.on("connect", () => {
-            console.log("Connected to server");
+            socket.on("update_image", (data) => {
+                if (data.skyplot1 && data.skyplot1 !== "data:image/png;base64,") {
+                    document.getElementById("skyplotImg1").src = data.skyplot1;
+                }
+                if (data.skyplot2 && data.skyplot2 !== "data:image/png;base64,") {
+                    document.getElementById("skyplotImg2").src = data.skyplot2;
+                }
+                if (data.spectrum1 && data.spectrum1 !== "data:image/png;base64,") {
+                    document.getElementById("spectrumImg1").src = data.spectrum1;
+                }
+                if (data.spectrum2 && data.spectrum2 !== "data:image/png;base64,") {
+                    document.getElementById("spectrumImg2").src = data.spectrum2;
+                }
+                if (data.dps && data.dps !== "data:image/png;base64,") {
+                    document.getElementById("dpsPlotImg").src = data.dps;
+                }
+                if (data.cpu_load) {
+                    document.getElementById("cpuLoadDisplay").innerText = "CPU Load: " + data.cpu_load + "%";
+                }
+            });
         });
-
-        socket.on("update_image", (data) => {
-            if (data.skyplot1 && data.skyplot1 !== "data:image/png;base64,") {
-                document.getElementById("skyplotImg1").src = data.skyplot1;
-            }
-            if (data.skyplot2 && data.skyplot2 !== "data:image/png;base64,") {
-                document.getElementById("skyplotImg2").src = data.skyplot2;
-            }
-            if (data.spectrum1 && data.spectrum1 !== "data:image/png;base64,") {
-                document.getElementById("spectrumImg1").src = data.spectrum1;
-            }
-            if (data.spectrum2 && data.spectrum2 !== "data:image/png;base64,") {
-                document.getElementById("spectrumImg2").src = data.spectrum2;
-            }
-            if (data.cpu_load) {
-                document.getElementById("cpuLoadDisplay").innerText = "CPU Load: " + data.cpu_load + "%";
-            }
-        });
-    });
-</script>
+    </script>
 </body>
+</html>
