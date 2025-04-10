@@ -7,14 +7,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib
 import base64
+from queue import Queue
 import serial
 import psutil
 from flask import Flask, render_template, jsonify, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
-from connect.connect import UBXConnector
-from process.process import MessageProcessor
 from pyubx2 import UBXReader
+import threading
 
 
 # ---------- Classes ----------
@@ -38,36 +38,21 @@ class RAWXData:
 
 
 # ---------- Config ----------
-matplotlib.use('Agg')
-matplotlib.rcParams['font.family'] = 'Arial'
 # use fix to fix
-fix = 1
+fix = 0
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
+data_queue = Queue()
 
 with open("config.json", "r") as file:
     config = json.load(file)
 
+
 BUFFER_SAMPLES = 30
-PLOT_INTERVAL = 2.0  # seconds
-
-combined_samples = []
-
-# ubx_connector = UBXConnector(config)
-# ubx_connector.start()
-# ubx_processor = MessageProcessor(ubx_connector.data_queue)
-# ubx_processor.start()
-port1 = "/dev/tty.usbmodem21401"
-port2 = "/dev/tty.usbmodem21201"
-# get data from serial COM5 and COM6 (COM6 haven't set)
-ser1 = serial.Serial(port1, baudrate=115200, timeout=1)
-ser2 = serial.Serial(port2, baudrate=115200, timeout=1)
-ubr1 = UBXReader(ser1, protfilter=2)
-ubr2 = UBXReader(ser2, protfilter=2)
-
+PLOT_INTERVAL = 1.0
 
 # ---------- Helper Functions ----------
 def append_with_limit(queue, item, maxlen=BUFFER_SAMPLES):
@@ -75,6 +60,60 @@ def append_with_limit(queue, item, maxlen=BUFFER_SAMPLES):
     if len(queue) > maxlen:
         del queue[0]
 
+def read_serial():
+    port1 = "/dev/ttyACM0"
+    port2 = "/dev/ttyACM1"
+    ser1 = serial.Serial(port1, baudrate=115200, timeout=1)
+    ser2 = serial.Serial(port2, baudrate=115200, timeout=1)
+    ubr1 = UBXReader(ser1, protfilter=2)
+    ubr2 = UBXReader(ser2, protfilter=2)
+    timer = 0
+    rawx1 = rawx2 = nav1 = nav2 = None
+
+    skyplot_data_1 = ""
+    spectrum_data_1 = ""
+    skyplot_data_2 = ""
+    spectrum_data_2 = ""
+    combined_samples = []
+
+    while True:
+        try:
+            raw_data_1, parsed_data_1 = ubr1.read()
+            raw_data_2, parsed_data_2 = ubr2.read()
+            if (raw_data_1 is None) or (raw_data_2 is None):
+                continue
+
+            if parsed_data_1.identity == "NAV-SAT":
+                skyplot_data_1 = parsed_data_1
+
+            if parsed_data_1.identity == "MON-SPAN":
+                spectrum_data_1 = parsed_data_1
+
+            if parsed_data_1.identity == "RXM-RAWX":
+                rawx1 = RAWXData(parsed_data_1)
+            if parsed_data_1.identity == "NAV-PVT":
+                nav1 = parsed_data_1
+
+            if parsed_data_2.identity == "NAV-SAT":
+                skyplot_data_2 = parsed_data_2
+
+            if parsed_data_2.identity == "MON-SPAN":
+                spectrum_data_2 = parsed_data_2
+
+            if parsed_data_2.identity == "RXM-RAWX":
+                rawx2 = RAWXData(parsed_data_2)
+            if parsed_data_2.identity == "NAV-PVT":
+                nav2 = parsed_data_2
+
+            # Append only if both devices have valid RAWX and NAV-PVT
+            if rawx1 and nav1 and rawx2 and nav2 and (round(rawx1.rcvTow) == round(rawx2.rcvTow)):
+            # if rawx1 and nav1 and rawx2 and nav2:
+                print(f"{rawx1.rcvTow} and {rawx2.rcvTow}")
+                append_with_limit(combined_samples, (rawx1, nav1, rawx2, nav2))
+                rawx1 = rawx2 = nav1 = nav2 = None
+                data_queue.put((combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2))
+        except Exception as e:
+            print("Error in get ublox data thread:", e)
 
 def calc_pseudorange(rxmRaw, navPvt):
     ps = np.zeros(32)
@@ -87,8 +126,7 @@ def calc_pseudorange(rxmRaw, navPvt):
                 continue
     return ps, np.zeros(32)
 
-
-def process_and_plot_if_ready():
+def process_and_plot_if_ready(combined_samples):
     if len(combined_samples) < BUFFER_SAMPLES:
         return
 
@@ -100,7 +138,7 @@ def process_and_plot_if_ready():
     sv_counter = 0
 
     for idx in range(BUFFER_SAMPLES):
-        (_, rawx1, nav1, _, rawx2, nav2) = combined_samples[idx]
+        (rawx1, nav1, rawx2, nav2) = combined_samples[idx]
 
         ps1, _ = calc_pseudorange(rawx1, nav1)
         ps2, _ = calc_pseudorange(rawx2, nav2)
@@ -158,7 +196,6 @@ def processData(parsed_data):
                 elev = getattr(parsed_data, f'elev_{i:02}', None)
                 if prn is not None and azim is not None and elev is not None:
                     satellites.append({'prn': prn, 'azim': azim, 'elev': elev})
-                print(f"SV {i}: PRN={prn}, Azimuth={azim}, Elevation={elev}")
             time.sleep(1)
     except Exception as e:
         print("Error reading UBX data:", e)
@@ -187,8 +224,6 @@ def processDataMonSpan(parsed_data):
                         print(f"Error reading attribute {attr}: {e}")
     except Exception as e:
         print("Error processing MON-SPAN data:", e)
-    if fix == 1:
-        print("MON-SPAN data:", mon_span_data)
     return mon_span_data
 
 
@@ -276,96 +311,49 @@ def about():
 def encode_image(buf):
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
-
+@socketio.on('connect')
+def handle_connect():
+    print("Client connected")
 # background socket
 def background_thread():
-    timer = 0
     last_plot_time = time.time()
-    rawx1 = rawx2 = nav1 = nav2 = None
-
-    skyplot_data_1 = ""
-    spectrum_data_1 = ""
-    skyplot_data_2 = ""
-    spectrum_data_2 = ""
     while True:
         try:
-            ts1 = ts2 = time.time()
-            cpu_load = psutil.cpu_percent(interval=0.005)
-            timer += 1
+            # Plot if enough time passed and buffer is full
+            current_time = time.time()
+            dps_plot = ""
+            cpu_load = psutil.cpu_percent(interval=0.5)
+            combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2 = data_queue.get()
+            if current_time - last_plot_time >= PLOT_INTERVAL:
+                dps_plot_data = process_and_plot_if_ready(combined_samples)
+                last_plot_time = current_time
+                dps_plot = encode_image(dps_plot_data)
 
-            # === Device 1 ===
-            _, parsed_data_1 = ubr1.read()
-
-            if parsed_data_1 and parsed_data_1.identity == "NAV-SAT":
-                skyplot_data_1 = parsed_data_1
-
-            if parsed_data_1 and parsed_data_1.identity == "MON-SPAN":
-                spectrum_data_1 = parsed_data_1
-
-            if parsed_data_1 and parsed_data_1.identity == "RXM-RAWX":
-                rawx1 = RAWXData(parsed_data_1)
-            if parsed_data_1 and parsed_data_1.identity == "NAV-PVT":
-                nav1 = parsed_data_1
-
-            # === Device 2 ===
-            _, parsed_data_2 = ubr2.read()
-
-            if parsed_data_2 and parsed_data_2.identity == "NAV-SAT":
-                skyplot_data_2 = parsed_data_2
-
-            if parsed_data_2 and parsed_data_2.identity == "MON-SPAN":
-                spectrum_data_2 = parsed_data_2
-
-            if parsed_data_2 and parsed_data_2.identity == "RXM-RAWX":
-                rawx2 = RAWXData(parsed_data_2)
-            if parsed_data_2 and parsed_data_2.identity == "NAV-PVT":
-                nav2 = parsed_data_2
-
-                # Append only if both devices have valid RAWX and NAV-PVT
-            if rawx1 and nav1 and rawx2 and nav2:
-                append_with_limit(combined_samples, (ts1, rawx1, nav1, ts2, rawx2, nav2))
-                rawx1 = rawx2 = nav1 = nav2 = None
-
-                # Plot if enough time passed and buffer is full
-                current_time = time.time()
-                dps_plot = ""
-                if current_time - last_plot_time >= PLOT_INTERVAL:
-                    dps_plot_data = process_and_plot_if_ready()
-                    last_plot_time = current_time
-                    dps_plot = encode_image(dps_plot_data)
-
-                if (dps_plot == ""):
-                    print("Dont send")
-                else:
-                    skyplot_1 = encode_image(create_skyplot(processData(skyplot_data_1)))
-                    skyplot_2 = encode_image(create_skyplot(processData(skyplot_data_2)))
-                    spectrum_1 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_1)))
-                    spectrum_2 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_2)))
-                    socketio.emit("update_image", {
-                        "skyplot1": "data:image/png;base64," + skyplot_1,
-                        "spectrum1": "data:image/png;base64," + spectrum_1,
-                        "skyplot2": "data:image/png;base64," + skyplot_2,
-                        "spectrum2": "data:image/png;base64," + spectrum_2,
-                        "cpu_load": cpu_load,
-                        "dps": "data:image/png;base64," + dps_plot,
-                    })
+            if (dps_plot == ""):
+                print("Dont send")
+            else:
+                skyplot_1 = encode_image(create_skyplot(processData(skyplot_data_1)))
+                skyplot_2 = encode_image(create_skyplot(processData(skyplot_data_2)))
+                spectrum_1 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_1)))
+                spectrum_2 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_2)))
+                socketio.emit("update_image", {
+                    "skyplot1": "data:image/png;base64," + skyplot_1,
+                    "spectrum1": "data:image/png;base64," + spectrum_1,
+                    "skyplot2": "data:image/png;base64," + skyplot_2,
+                    "spectrum2": "data:image/png;base64," + spectrum_2,
+                    "cpu_load": cpu_load,
+                    "dps": "data:image/png;base64," + dps_plot,
+                })
         except Exception as e:
             print("Error in background thread:", e)
 
 
-socketio.start_background_task(background_thread)
-try:
-    logging.debug("Starting Flask app...")
-    socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
-except KeyboardInterrupt:
-    logging.info("Shutting down...")
-
 if __name__ == "__main__":
+    serial_thread = threading.Thread(target=read_serial)
+    serial_thread.start()
     socketio.start_background_task(background_thread)
     try:
         logging.debug("Starting Flask app...")
         socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         logging.info("Shutting down...")
-    # finally:
-    #     ubx_connector.close_connections()
