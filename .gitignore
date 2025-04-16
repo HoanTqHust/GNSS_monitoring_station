@@ -9,5 +9,6 @@ UBX0_2.ubx
 test.py
 test02.py
 templates/index01.html
+data/
 
 __pycache__/
