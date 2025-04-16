@@ -1,13 +1,18 @@
+
 import json
 import logging
+import os
 import time
 import io
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib
+from datetime import datetime
 import base64
-from queue import Queue
+from multiprocessing import Process
+from multiprocessing import Queue
+
 import serial
 import psutil
 from flask import Flask, render_template, jsonify, send_file
@@ -45,14 +50,14 @@ logging.basicConfig(level=logging.DEBUG)
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
-data_queue = Queue()
+data_queue = Queue(maxsize=1000)    # queue use to send data from read uart thread to draw thread
 
 with open("config.json", "r") as file:
     config = json.load(file)
 
 
 BUFFER_SAMPLES = 30
-PLOT_INTERVAL = 1.0
+PLOT_INTERVAL = 2.0
 
 # ---------- Helper Functions ----------
 def append_with_limit(queue, item, maxlen=BUFFER_SAMPLES):
@@ -63,8 +68,8 @@ def append_with_limit(queue, item, maxlen=BUFFER_SAMPLES):
 def read_serial():
     port1 = "/dev/ttyACM0"
     port2 = "/dev/ttyACM1"
-    ser1 = serial.Serial(port1, baudrate=115200, timeout=1)
-    ser2 = serial.Serial(port2, baudrate=115200, timeout=1)
+    ser1 = serial.Serial(port1, baudrate=38400, timeout=1)
+    ser2 = serial.Serial(port2, baudrate=38400, timeout=1)
     ubr1 = UBXReader(ser1, protfilter=2)
     ubr2 = UBXReader(ser2, protfilter=2)
     timer = 0
@@ -82,7 +87,8 @@ def read_serial():
             raw_data_2, parsed_data_2 = ubr2.read()
             if (raw_data_1 is None) or (raw_data_2 is None):
                 continue
-
+#            print(parsed_data_1)
+ #           print(parsed_data_2)
             if parsed_data_1.identity == "NAV-SAT":
                 skyplot_data_1 = parsed_data_1
 
@@ -111,7 +117,12 @@ def read_serial():
                 print(f"{rawx1.rcvTow} and {rawx2.rcvTow}")
                 append_with_limit(combined_samples, (rawx1, nav1, rawx2, nav2))
                 rawx1 = rawx2 = nav1 = nav2 = None
-                data_queue.put((combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2))
+                try:
+                    if data_queue.full():
+                        data_queue.get_nowait()  # bỏ phần tử cũ
+                    data_queue.put((combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2))
+                except Exception as e:
+                    print("Queue put error:", e)
         except Exception as e:
             print("Error in get ublox data thread:", e)
 
@@ -126,7 +137,7 @@ def calc_pseudorange(rxmRaw, navPvt):
                 continue
     return ps, np.zeros(32)
 
-def process_and_plot_if_ready(combined_samples):
+def process_ubx_data(combined_samples):
     if len(combined_samples) < BUFFER_SAMPLES:
         return
 
@@ -158,10 +169,10 @@ def process_and_plot_if_ready(combined_samples):
 
     valid_columns = np.any(dps != 0, axis=0)
     dps_trimmed = dps[:, valid_columns]
+    print(dps_trimmed)
     svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx]]
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
-
     for i, svId in enumerate(svIds):
         axes[0].plot(dps_trimmed[:, i], label=f'SV {svId}', alpha=0.8)
 
@@ -183,6 +194,8 @@ def process_and_plot_if_ready(combined_samples):
     plt.savefig(buf, format='png', bbox_inches='tight')
     plt.close(fig)
     buf.seek(0)
+    mean_abs_dps = np.abs(np.mean(dps_trimmed, axis=0))
+    mean_abs_all = np.mean(np.abs(dps_trimmed))
     return buf
 
 
@@ -309,7 +322,8 @@ def about():
 
 
 def encode_image(buf):
-    return base64.b64encode(buf.getvalue()).decode('utf-8')
+    with buf:
+        return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 @socketio.on('connect')
 def handle_connect():
@@ -325,13 +339,20 @@ def background_thread():
             cpu_load = psutil.cpu_percent(interval=0.5)
             combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2 = data_queue.get()
             if current_time - last_plot_time >= PLOT_INTERVAL:
-                dps_plot_data = process_and_plot_if_ready(combined_samples)
+                dps_plot_data = process_ubx_data(combined_samples)
                 last_plot_time = current_time
                 dps_plot = encode_image(dps_plot_data)
-
             if (dps_plot == ""):
                 print("Dont send")
             else:
+                # Create 'data' directory if it doesn't exist
+                # os.makedirs("data", exist_ok=True)
+                # Get current timestamp as filename
+                # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # filename = f"data/dps_{timestamp}.png"
+                # Decode base64 and save to file
+                # with open(filename, "wb") as f:
+                #    f.write(base64.b64decode(dps_plot))
                 skyplot_1 = encode_image(create_skyplot(processData(skyplot_data_1)))
                 skyplot_2 = encode_image(create_skyplot(processData(skyplot_data_2)))
                 spectrum_1 = encode_image(create_spectrum_plot(processDataMonSpan(spectrum_data_1)))
@@ -349,8 +370,9 @@ def background_thread():
 
 
 if __name__ == "__main__":
-    serial_thread = threading.Thread(target=read_serial)
-    serial_thread.start()
+    serial_process = Process(target=read_serial)
+    serial_process.start()
+
     socketio.start_background_task(background_thread)
     try:
         logging.debug("Starting Flask app...")
