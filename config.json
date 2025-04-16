@@ -1,4 +1,9 @@
 {
-  "ubx1":"COM5",
-  "ubx2":"COM6"
+  "port1": "/dev/ttyACM0",
+  "port2": "/dev/ttyACM1",
+  "BUFFER_SAMPLES": 30,
+  "PLOT_INTERVAL": 2.0,
+  "fix": 0,
+  "hostsocket": "0.0.0.0",
+  "portsocket": "5000"
 }
