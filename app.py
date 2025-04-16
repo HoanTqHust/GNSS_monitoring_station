@@ -169,7 +169,6 @@ def process_ubx_data(combined_samples):
 
     valid_columns = np.any(dps != 0, axis=0)
     dps_trimmed = dps[:, valid_columns]
-    print(dps_trimmed)
     svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx]]
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
@@ -194,8 +193,6 @@ def process_ubx_data(combined_samples):
     plt.savefig(buf, format='png', bbox_inches='tight')
     plt.close(fig)
     buf.seek(0)
-    mean_abs_dps = np.abs(np.mean(dps_trimmed, axis=0))
-    mean_abs_all = np.mean(np.abs(dps_trimmed))
     return buf
 
 
