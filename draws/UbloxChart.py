@@ -146,6 +146,16 @@ class UbloxChart:
         valid_columns = np.any(dps != 0, axis=0)
         dps_trimmed = dps[:, valid_columns]
         svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx]]
+        
+        abs_means = {}
+
+        for i, svId in enumerate(svIds):
+            dps_values = dps_trimmed[:, i]
+            last_10_samples = dps_values[-10:]  # lấy 10 mẫu cuối cùng
+            abs_mean = np.mean(np.abs(last_10_samples))  # tính giá trị trung bình tuyệt đối
+
+            abs_means[svId] = abs_mean  # lưu kết quả theo svId
+        print(abs_means)
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
         for i, svId in enumerate(svIds):
