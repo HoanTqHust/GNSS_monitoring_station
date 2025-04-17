@@ -5,12 +5,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import base64
 import json
+import config
 class UbloxChart:
-    with open("config.json", "r") as file:
-        config = json.load(file)
-    fix = config.get("fix", 0)
-    BUFFER_SAMPLES = config.get("BUFFER_SAMPLES", 0)
-    PLOT_INTERVAL = config.get("PLOT_INTERVAL", 0)
+
     def encode_image(buf):
         with buf:
             return base64.b64encode(buf.getvalue()).decode('utf-8')
@@ -115,27 +112,22 @@ class UbloxChart:
         for sat in rxmRaw.satData:
             if sat.gnssId == 0 and sat.sigId == 0:  # GPS L1 only
                 try:
-                    # Add your pseudorange calculation here.
-                    # For example, assuming a simple difference:
-                    ps_val = navPvt.some_measurement - sat.some_measurement
-                    # In this example, the calculated value is assigned.
-                    ps[sat.svId - 1] = ps_val
-                except Exception as e:
-                    print(f"Error in calc_pseudorange for svId {sat.svId}: {e}")
+                    sv_index = sat.svId - 1
+                    ps[sv_index] = sat.cpMes + float(navPvt.nano) * 1e-9 * float(sat.doMes)
+                except:
                     continue
-        # Returning ps and an additional zero array as in the original definition.
         return ps, np.zeros(32)
 
-    def process_ubx_data(combined_samples, BUFFER_SAMPLES):
-        if len(combined_samples) < BUFFER_SAMPLES:
+    def process_ubx_data(combined_samples):
+        if len(combined_samples) <config.config.BUFFER_SAMPLES:
             return None
 
-        print(f"[INFO] Plotting with {BUFFER_SAMPLES} samples")
-        dps = np.zeros((BUFFER_SAMPLES, 32))
+        print(f"[INFO] Plotting with {config.config.BUFFER_SAMPLES} samples")
+        dps = np.zeros((config.config.BUFFER_SAMPLES, 32))
         svId_to_idx = {}
         sv_counter = 0
 
-        for idx in range(BUFFER_SAMPLES):
+        for idx in range(config.config.BUFFER_SAMPLES):
             rawx1, nav1, rawx2, nav2 = combined_samples[idx]
             ps1, _ = UbloxChart.calc_pseudorange(rawx1, nav1)
             ps2, _ = UbloxChart.calc_pseudorange(rawx2, nav2)
@@ -178,6 +170,7 @@ class UbloxChart:
         plt.close(fig)
         buf.seek(0)
         return buf
+    
     @staticmethod
     def raw2ImageSkyplot(raw_data):
         skyplot_data = UbloxChart.processData(raw_data)
@@ -190,7 +183,7 @@ class UbloxChart:
         return UbloxChart.encode_image(buf)
     @staticmethod
     def raw2ImageDps(raw_data):
-        dps_data = UbloxChart.process_ubx_data(raw_data, UbloxChart.BUFFER_SAMPLES)
+        dps_data = UbloxChart.process_ubx_data(raw_data)
         if dps_data is None:
             return None
         return UbloxChart.encode_image(dps_data)
