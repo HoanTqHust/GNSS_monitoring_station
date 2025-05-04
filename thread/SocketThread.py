@@ -12,6 +12,7 @@ class SocketThread:
                # Plot if enough time passed and buffer is full
                current_time = time.time()
                dps_plot = ""
+               spoofing = False
                cpu_load = psutil.cpu_percent(interval=0.5)
                combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2 = data_queue.get()
                print(f"combined_samples: {len(combined_samples)}")
@@ -19,10 +20,9 @@ class SocketThread:
                    if config.FIX == 1:
                        print("combined_samples", combined_samples)
                    last_plot_time = current_time
-                   dps_plot = UbloxChart.raw2ImageDps(combined_samples)
+                   dps_plot, spoofing_detected = UbloxChart.raw2ImageDps(combined_samples)
                if (dps_plot == ""):
                    print("Dont send")
-
                else:
                    print("Sended data")
                    skyplot_1 = UbloxChart.raw2ImageSkyplot(skyplot_data_1)
@@ -36,6 +36,7 @@ class SocketThread:
                        "spectrum2": "data:image/png;base64," + spectrum_2,
                        "cpu_load": cpu_load,
                        "dps": "data:image/png;base64," + dps_plot,
+                       "spoofing": spoofing_detected
                    })
            except Exception as e:
                print("Error in background thread:", e)

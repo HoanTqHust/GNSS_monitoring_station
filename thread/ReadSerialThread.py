@@ -2,6 +2,7 @@ import serial
 from pyubx2 import UBXReader
 from models.RAWXData import RAWXData
 from config import config
+from logs.RawDataLogger import RawDataLogger
 
 
 #config
@@ -14,7 +15,7 @@ class ReadSerial:
             del queue[0]
     @staticmethod
     def read_serial(data_queue):
-        
+        logger = RawDataLogger()
         ser1 = serial.Serial(config.PORT1, baudrate=38400, timeout=1)
         ser2 = serial.Serial(config.PORT2, baudrate=38400, timeout=1)
         ubr1 = UBXReader(ser1, protfilter=2)
@@ -32,6 +33,7 @@ class ReadSerial:
             try:
                 raw_data_1, parsed_data_1 = ubr1.read()
                 raw_data_2, parsed_data_2 = ubr2.read()
+                # logger.log(raw_data_1, raw_data_2)
                 if (raw_data_1 is None) or (raw_data_2 is None):
                     continue
                 # print(parsed_data_1)

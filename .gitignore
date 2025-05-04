@@ -10,5 +10,7 @@ test.py
 test02.py
 templates/index01.html
 data/
+logs/
+logs.zip
 
 __pycache__/

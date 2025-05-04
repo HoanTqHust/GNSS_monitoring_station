@@ -1,5 +1,6 @@
 import io
 import time
+from sklearn.linear_model import LinearRegression
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -119,15 +120,15 @@ class UbloxChart:
         return ps, np.zeros(32)
 
     def process_ubx_data(combined_samples):
-        if len(combined_samples) <config.config.BUFFER_SAMPLES:
-            return None
+        # if len(combined_samples) <config.config.BUFFER_SAMPLES:
+        #     return None
 
-        print(f"[INFO] Plotting with {config.config.BUFFER_SAMPLES} samples")
-        dps = np.zeros((config.config.BUFFER_SAMPLES, 32))
+        print(f"[INFO] Plotting with {len(combined_samples)} samples")
+        dps = np.zeros((len(combined_samples), 32))
         svId_to_idx = {}
         sv_counter = 0
 
-        for idx in range(config.config.BUFFER_SAMPLES):
+        for idx in range(len(combined_samples)):
             rawx1, nav1, rawx2, nav2 = combined_samples[idx]
             ps1, _ = UbloxChart.calc_pseudorange(rawx1, nav1)
             ps2, _ = UbloxChart.calc_pseudorange(rawx2, nav2)
@@ -141,21 +142,21 @@ class UbloxChart:
 
             if sv_counter > 0:
                 dps[idx, :] -= dps[idx, 0]
-            dps[idx, :] -= np.round(dps[idx, :])
+            # dps[idx, :] -= np.round(dps[idx, :])
 
         valid_columns = np.any(dps != 0, axis=0)
         dps_trimmed = dps[:, valid_columns]
         svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx]]
         
-        abs_means = {}
+        # abs_means = {}
 
-        for i, svId in enumerate(svIds):
-            dps_values = dps_trimmed[:, i]
-            last_10_samples = dps_values[-10:]  # lấy 10 mẫu cuối cùng
-            abs_mean = np.mean(np.abs(last_10_samples))  # tính giá trị trung bình tuyệt đối
+        # for i, svId in enumerate(svIds):
+        #     dps_values = dps_trimmed[:, i]
+        #     last_10_samples = dps_values[-10:]  # lấy 10 mẫu cuối cùng
+        #     abs_mean = np.mean(np.abs(last_10_samples))  # tính giá trị trung bình tuyệt đối
 
-            abs_means[svId] = abs_mean  # lưu kết quả theo svId
-        print(abs_means)
+        #     abs_means[svId] = abs_mean  # lưu kết quả theo svId
+        # print(abs_means)
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
         for i, svId in enumerate(svIds):
@@ -174,12 +175,61 @@ class UbloxChart:
         axes[1].set_ylabel("Satellite SV ID")
         axes[1].set_title("Heatmap of Pseudorange Differences")
 
+        time_idx = np.arange(dps_trimmed.shape[0]).reshape(-1, 1)  # X là index thời gian
+        spoofing_count = 0
+        
+        a_list = []  # Lưu tất cả hệ số a
+        svId_list = []  # Lưu svId tương ứng
+
+        # Tính a cho từng svId
+        for i, svId in enumerate(svIds):
+            y = dps_trimmed[:, i]
+
+            model = LinearRegression()
+            model.fit(time_idx, y)
+
+            a = model.coef_[0]
+            b = model.intercept_
+
+            a_list.append(a)
+            svId_list.append(svId)
+
+            print(f"SV {svId}: a = {a:.6f}, b = {b:.6f}")
+
+        # Phân cụm theo delta a
+        delta_a = 0.0001
+        clusters = []
+
+        for i, a in enumerate(a_list):
+            found_cluster = False
+            for cluster in clusters:
+                # So sánh với đại diện của cụm (có thể lấy phần tử đầu tiên)
+                if abs(a - cluster[0][0]) < delta_a:
+                    cluster.append((a, svId_list[i]))
+                    found_cluster = True
+                    break
+            if not found_cluster:
+                # Tạo cụm mới
+                clusters.append([(a, svId_list[i])])
+
+        # Kiểm tra các cụm
+        spoofing_detected = False
+        for cluster in clusters:
+            if len(cluster) >= 3:
+                spoofing_detected = True
+                print("!!! Spoofing detected in cluster:")
+                for a_val, sv_id in cluster:
+                    print(f"   SV {sv_id} with a = {a_val:.6f}")
+
+        if not spoofing_detected:
+            print("No spoofing detected.")
+
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight')
         plt.close(fig)
         buf.seek(0)
-        return buf
+        return buf, spoofing_detected
     
     @staticmethod
     def raw2ImageSkyplot(raw_data):
@@ -193,7 +243,7 @@ class UbloxChart:
         return UbloxChart.encode_image(buf)
     @staticmethod
     def raw2ImageDps(raw_data):
-        dps_data = UbloxChart.process_ubx_data(raw_data)
+        dps_data, spoofing_count = UbloxChart.process_ubx_data(raw_data)
         if dps_data is None:
             return None
-        return UbloxChart.encode_image(dps_data)
+        return UbloxChart.encode_image(dps_data), spoofing_count
