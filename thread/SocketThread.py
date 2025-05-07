@@ -20,7 +20,7 @@ class SocketThread:
                    if config.FIX == 1:
                        print("combined_samples", combined_samples)
                    last_plot_time = current_time
-                   dps_plot, spoofing_detected = UbloxChart.raw2ImageDps(combined_samples)
+                   dps_plot, spoofing_detected = UbloxChart.raw2ImageDps(combined_samples, skyplot_data_1)
                if (dps_plot == ""):
                    print("Dont send")
                else:

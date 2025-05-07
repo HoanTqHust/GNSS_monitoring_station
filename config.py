@@ -18,3 +18,5 @@ class config:
     HOSTSOCKET = os.environ.get("HOSTSOCKET", "0.0.0.0")
     
     PORTSOCKET = int(os.environ.get("PORTSOCKET", 5000))
+    
+    ELE_MASK = int(os.environ.get("ELE_MASK", 15))

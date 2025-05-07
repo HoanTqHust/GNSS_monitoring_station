@@ -12,7 +12,7 @@ class UbloxChart:
     def encode_image(buf):
         with buf:
             return base64.b64encode(buf.getvalue()).decode('utf-8')
-    def processData(parsed_data):
+    def parseSatelliteInfo(parsed_data):
         satellites = []
         try:
             if parsed_data and parsed_data.identity == "NAV-SAT":
@@ -20,8 +20,9 @@ class UbloxChart:
                     prn = getattr(parsed_data, f'svId_{i:02}', None)
                     azim = getattr(parsed_data, f'azim_{i:02}', None)
                     elev = getattr(parsed_data, f'elev_{i:02}', None)
+                    gnssId = getattr(parsed_data, f'gnssId_{i:02}', None)
                     if prn is not None and azim is not None and elev is not None:
-                        satellites.append({'prn': prn, 'azim': azim, 'elev': elev})
+                        satellites.append({'prn': prn, 'azim': azim, 'elev': elev, 'gnssId': gnssId})
                 time.sleep(1)
         except Exception as e:
             print("Error reading UBX data:", e)
@@ -119,7 +120,7 @@ class UbloxChart:
                     continue
         return ps, np.zeros(32)
 
-    def process_ubx_data(combined_samples):
+    def process_ubx_data(combined_samples, skyplot_data):
         # if len(combined_samples) <config.config.BUFFER_SAMPLES:
         #     return None
 
@@ -142,21 +143,16 @@ class UbloxChart:
 
             if sv_counter > 0:
                 dps[idx, :] -= dps[idx, 0]
-            # dps[idx, :] -= np.round(dps[idx, :])
+            dps[idx, :] -= np.round(dps[idx, :])
+            dps[idx, :] = np.abs(dps[idx, :])
 
+
+        satellite_infor = UbloxChart.parseSatelliteInfo(skyplot_data)
+        # Lấy danh sách PRNs có elevation > 15
+        ele_mask_valid = {entry['prn'] for entry in satellite_infor if (entry['elev'] > config.config.ELE_MASK and entry['gnssId'] == 0)}
         valid_columns = np.any(dps != 0, axis=0)
         dps_trimmed = dps[:, valid_columns]
-        svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx]]
-        
-        # abs_means = {}
-
-        # for i, svId in enumerate(svIds):
-        #     dps_values = dps_trimmed[:, i]
-        #     last_10_samples = dps_values[-10:]  # lấy 10 mẫu cuối cùng
-        #     abs_mean = np.mean(np.abs(last_10_samples))  # tính giá trị trung bình tuyệt đối
-
-        #     abs_means[svId] = abs_mean  # lưu kết quả theo svId
-        # print(abs_means)
+        svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx] and svId in ele_mask_valid]
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
         for i, svId in enumerate(svIds):
@@ -215,7 +211,7 @@ class UbloxChart:
         # Kiểm tra các cụm
         spoofing_detected = False
         for cluster in clusters:
-            if len(cluster) >= 3:
+            if len(cluster) >= 4:
                 spoofing_detected = True
                 print("!!! Spoofing detected in cluster:")
                 for a_val, sv_id in cluster:
@@ -233,7 +229,7 @@ class UbloxChart:
     
     @staticmethod
     def raw2ImageSkyplot(raw_data):
-        skyplot_data = UbloxChart.processData(raw_data)
+        skyplot_data = UbloxChart.parseSatelliteInfo(raw_data)
         buf = UbloxChart.create_skyplot(skyplot_data)
         return UbloxChart.encode_image(buf)
     @staticmethod
@@ -242,8 +238,8 @@ class UbloxChart:
         buf = UbloxChart.create_spectrum_plot(spectrum_data)
         return UbloxChart.encode_image(buf)
     @staticmethod
-    def raw2ImageDps(raw_data):
-        dps_data, spoofing_count = UbloxChart.process_ubx_data(raw_data)
+    def raw2ImageDps(raw_data, skyplot_data):
+        dps_data, spoofing_count = UbloxChart.process_ubx_data(raw_data, skyplot_data)
         if dps_data is None:
             return None
         return UbloxChart.encode_image(dps_data), spoofing_count
