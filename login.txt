@@ -1,0 +1,38 @@
+# 1) GET trang login để lấy cookie phiên
+curl -i \
+  --interface eth0 \
+  --resolve login.hust.edu.vn:443:192.168.141.1 \
+  -c cookies.txt \
+  "https://login.hust.edu.vn/login" > /dev/null
+
+# 2) POST thông tin đăng nhập + dst tới example.com
+curl -i -L \
+  --interface eth0 \
+  --resolve login.hust.edu.vn:443:192.168.141.1 \
+  -b cookies.txt -c cookies.txt \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "username=navis" \
+  --data-urlencode "password=gpsgalileo" \
+  --data-urlencode "dst=http://example.com" \
+  --data-urlencode "popup=true" \
+  "https://login.hust.edu.vn/login"
+
+
+# 1) GET trang login để lấy cookie phiên
+curl -i \
+  --interface wlan0 \
+  --resolve login.hust.edu.vn:443:192.168.141.1 \
+  -c cookies.txt \
+  "https://login.hust.edu.vn/login" > /dev/null
+
+# 2) POST thông tin đăng nhập + dst tới example.com
+curl -i -L \
+  --interface wlan0 \
+  --resolve login.hust.edu.vn:443:192.168.141.1 \
+  -b cookies.txt -c cookies.txt \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "username=navis" \
+  --data-urlencode "password=gpsgalileo" \
+  --data-urlencode "dst=http://example.com" \
+  --data-urlencode "popup=true" \
+  "https://login.hust.edu.vn/login"

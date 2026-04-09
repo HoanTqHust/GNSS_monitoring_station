@@ -88,7 +88,7 @@
 
 <body>
 
-    <h1>GPS Data Monitor</h1>
+    <h1>BKGSD - GNSS Spoofing Detection</h1>
 
     <!-- CPU Load -->
     <div class="section">
@@ -100,7 +100,7 @@
 
     <!-- Pseudorange Difference Plot -->
     <div class="section">
-        <h2>Pseudorange Difference Plot</h2>
+        <h2>Carrier phase Difference Plot</h2>
         <div class="plot-container">
             <img id="dpsPlotImg" src="" alt="Pseudorange Difference Plot">
         </div>
@@ -144,7 +144,7 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
     <script>
         document.addEventListener("DOMContentLoaded", function () {
-            const socket = io("http://100.87.248.26:5000");
+            const socket = io("http://192.168.5.2:5000");
 
             socket.on("connect", () => {
                 console.log("Connected to server");

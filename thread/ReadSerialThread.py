@@ -1,5 +1,5 @@
 import serial
-from pyubx2 import UBXReader
+from pyubx2 import UBXReader, UBX_PROTOCOL, NMEA_PROTOCOL   
 from models.RAWXData import RAWXData
 from config import config
 from logs.RawDataLogger import RawDataLogger
@@ -16,10 +16,10 @@ class ReadSerial:
     @staticmethod
     def read_serial(data_queue):
         logger = RawDataLogger()
-        ser1 = serial.Serial(config.PORT1, baudrate=38400, timeout=1)
-        ser2 = serial.Serial(config.PORT2, baudrate=38400, timeout=1)
-        ubr1 = UBXReader(ser1, protfilter=2)
-        ubr2 = UBXReader(ser2, protfilter=2)
+        ser1 = serial.Serial(config.PORT1, baudrate=115200, timeout=1)
+        ser2 = serial.Serial(config.PORT2, baudrate=115200, timeout=1)
+        ubr1 = UBXReader(ser1, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
+        ubr2 = UBXReader(ser2, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
         timer = 0
         rawx1 = rawx2 = nav1 = nav2 = None
     
@@ -33,11 +33,9 @@ class ReadSerial:
             try:
                 raw_data_1, parsed_data_1 = ubr1.read()
                 raw_data_2, parsed_data_2 = ubr2.read()
-                # logger.log(raw_data_1, raw_data_2)
+                #logger.log(raw_data_1, raw_data_2)
                 if (raw_data_1 is None) or (raw_data_2 is None):
                     continue
-                # print(parsed_data_1)
-                # print(parsed_data_2)
                 if parsed_data_1.identity == "NAV-SAT":
                     skyplot_data_1 = parsed_data_1
     
@@ -61,6 +59,7 @@ class ReadSerial:
                     nav2 = parsed_data_2
     
                 # Append only if both devices have valid RAWX and NAV-PVT
+                #print(f"{rawx1.rcvTow} and {rawx2.rcvTow}")
                 if rawx1 and nav1 and rawx2 and nav2 and (round(rawx1.rcvTow) == round(rawx2.rcvTow)):
                 # if rawx1 and nav1 and rawx2 and nav2:
                     print(f"{rawx1.rcvTow} and {rawx2.rcvTow}")
@@ -73,4 +72,5 @@ class ReadSerial:
                     except Exception as e:
                         print("Queue put error:", e)
             except Exception as e:
+                print("\r\n")
                 print("Error in get ublox data thread:", e)

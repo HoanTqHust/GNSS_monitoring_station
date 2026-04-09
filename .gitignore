@@ -12,5 +12,10 @@ templates/index01.html
 data/
 logs_data/
 logs.zip
-
+Plot/
+logs/
+logs_*/
+logs/*
+2025-10-28/
+.*/
 __pycache__/

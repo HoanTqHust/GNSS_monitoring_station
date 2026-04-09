@@ -37,10 +37,11 @@ class UbloxChart:
         ax.set_yticklabels([f"{90 - deg}°" for deg in range(0, 91, 10)])
     
         for sat in satellites:
-            r = 90 - sat['elev']
-            theta = np.deg2rad(sat['azim'])
-            ax.plot(theta, r, 'o', label=f"PRN {sat['prn']}")
-            ax.text(theta, r, f"{sat['prn']}", fontsize=8, ha='center', va='bottom')
+            if sat['gnssId'] == 0:
+                r = 90 - sat['elev']
+                theta = np.deg2rad(sat['azim'])
+                ax.plot(theta, r, 'o', label=f"PRN {sat['prn']}")
+                ax.text(theta, r, f"{sat['prn']}", fontsize=8, ha='center', va='bottom')
     
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
@@ -121,9 +122,6 @@ class UbloxChart:
         return ps, np.zeros(32)
 
     def process_ubx_data(combined_samples, skyplot_data):
-        # if len(combined_samples) <config.config.BUFFER_SAMPLES:
-        #     return None
-
         print(f"[INFO] Plotting with {len(combined_samples)} samples")
         dps = np.zeros((len(combined_samples), 32))
         svId_to_idx = {}
@@ -142,48 +140,35 @@ class UbloxChart:
                     dps[idx, svId_to_idx[svId]] = ps1[i] - ps2[i]
 
             if sv_counter > 0:
-                dps[idx, :] -= dps[idx, 0]
+                dps[idx, :] -= dps[idx,1]
             dps[idx, :] -= np.round(dps[idx, :])
-            dps[idx, :] = np.abs(dps[idx, :])
-
 
         satellite_infor = UbloxChart.parseSatelliteInfo(skyplot_data)
-        # Lấy danh sách PRNs có elevation > 15
         ele_mask_valid = {entry['prn'] for entry in satellite_infor if (entry['elev'] > config.config.ELE_MASK and entry['gnssId'] == 0)}
         valid_columns = np.any(dps != 0, axis=0)
         dps_trimmed = dps[:, valid_columns]
         svIds = [svId for svId, idx in svId_to_idx.items() if valid_columns[idx] and svId in ele_mask_valid]
 
-        fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
+        fig, ax = plt.subplots(figsize=(12, 6))  # Single subplot now
         for i, svId in enumerate(svIds):
-            axes[0].plot(dps_trimmed[:, i], label=f'SV {svId}', alpha=0.8)
+            ax.plot(dps_trimmed[:, i], label=f'SV {svId}', alpha=0.8)
 
-        axes[0].legend(ncol=4, fontsize=8)
-        axes[0].grid(True)
-        axes[0].set_xlabel('Time Index')
-        axes[0].set_ylabel('Pseudorange Difference (m)')
-        axes[0].set_title('Sliding Window Pseudorange Differences')
+        ax.legend(ncol=4, fontsize=8)
+        ax.grid(True)
+        ax.set_xlabel('Time Index')
+        ax.set_ylabel('Carrier phase differences (Cycle)')
+        ax.set_title('Sliding Window Carrier Phase Differences')
+        ax.set_ylim([-0.5, 0.5])
 
-        sns.heatmap(dps_trimmed.T, cmap="coolwarm", cbar=True, ax=axes[1], linewidths=0.5)
-        axes[1].set_yticks(np.arange(len(svIds)) + 0.5)
-        axes[1].set_yticklabels([f"SV {svId}" for svId in svIds], rotation=0)
-        axes[1].set_xlabel("Time Index")
-        axes[1].set_ylabel("Satellite SV ID")
-        axes[1].set_title("Heatmap of Pseudorange Differences")
+        time_idx = np.arange(dps_trimmed.shape[0]).reshape(-1, 1)
 
-        time_idx = np.arange(dps_trimmed.shape[0]).reshape(-1, 1)  # X là index thời gian
-        spoofing_count = 0
-        
-        a_list = []  # Lưu tất cả hệ số a
-        svId_list = []  # Lưu svId tương ứng
+        a_list = []
+        svId_list = []
 
-        # Tính a cho từng svId
         for i, svId in enumerate(svIds):
             y = dps_trimmed[:, i]
-
             model = LinearRegression()
             model.fit(time_idx, y)
-
             a = model.coef_[0]
             b = model.intercept_
 
@@ -192,23 +177,19 @@ class UbloxChart:
 
             print(f"SV {svId}: a = {a:.6f}, b = {b:.6f}")
 
-        # Phân cụm theo delta a
         delta_a = 0.0001
         clusters = []
 
         for i, a in enumerate(a_list):
             found_cluster = False
             for cluster in clusters:
-                # So sánh với đại diện của cụm (có thể lấy phần tử đầu tiên)
                 if abs(a - cluster[0][0]) < delta_a:
                     cluster.append((a, svId_list[i]))
                     found_cluster = True
                     break
             if not found_cluster:
-                # Tạo cụm mới
                 clusters.append([(a, svId_list[i])])
 
-        # Kiểm tra các cụm
         spoofing_detected = False
         for cluster in clusters:
             if len(cluster) >= 4:
@@ -226,6 +207,7 @@ class UbloxChart:
         plt.close(fig)
         buf.seek(0)
         return buf, spoofing_detected
+
     
     @staticmethod
     def raw2ImageSkyplot(raw_data):
