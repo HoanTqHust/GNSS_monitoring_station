@@ -16,6 +16,7 @@
 - `app.py`: web app bootstrap and runtime orchestration
 - `config.py`: environment loading and runtime settings
 - `models/`: data wrappers for parsed RAWX messages
+- `realtime/`: realtime measurement-builder and detector-engine skeleton for live spoofing outputs
 - `thread/`: serial ingestion worker and Socket.IO streaming worker
 - `draws/`: plotting and detection logic
 - `logs/`: raw UBX logging helper
@@ -29,6 +30,8 @@
 | --- | --- | --- | --- | --- | --- |
 | Web runtime | Builds the Flask app, routes, and startup flow | `app.py`, `templates/index.html`, `templates/about.html` | changing routes, startup behavior, or dashboard rendering | `flask`, `flask_socketio`, `thread/*`, `config.py` | web users, background workers |
 | Serial ingestion | Reads UBX messages from two receivers, synchronizes samples, pushes data into the queue | `thread/ReadSerialThread.py` | changing serial ports, message types, or synchronization logic | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py` | `app.py`, `thread/SocketThread.py` |
+| Realtime detector skeleton | Converts normalized epochs into measurement frames and writes separated detector outputs | `realtime/pipeline.py`, `realtime/measurement_builders/*`, `realtime/detector_engines/*`, `realtime/output_writer.py` | adding live SoS/D3 flow, changing output format, preparing MQTT/REST integration | `models`-compatible RAWX objects, `numpy`, filesystem output | future live detector workers or publishers |
+| Standalone live runner | Reads live UBX streams and feeds synchronized epochs into the realtime pipeline | `realtime/live_runner.py` | running the detector stack without touching the web app runtime | `serial`, `pyubx2`, `config.py`, `models/RAWXData.py`, `realtime/pipeline.py` | operators, live smoke tests |
 | Visualization + detection | Computes carrier phase differences, creates skyplot/spectrum/DPS images, flags spoofing | `draws/UbloxChart.py` | changing the algorithm, plotting, or thresholds | `numpy`, `matplotlib`, `sklearn`, `config.py` | `thread/SocketThread.py` |
 | Data model | Converts parsed UBX messages into Python objects for downstream processing | `models/RAWXData.py`, `models/SatelliteData.py` | changing extracted fields or per-satellite metadata | parsed UBX objects | `thread/ReadSerialThread.py`, `draws/UbloxChart.py` |
 | Streaming worker | Pulls queue data, encodes images, emits frontend events | `thread/SocketThread.py` | changing emit cadence, payload shape, or metrics | `draws/UbloxChart.py`, `psutil`, `config.py` | `app.py`, frontend |
@@ -63,6 +66,10 @@
   - review `calc_pseudorange()`, `process_ubx_data()`, and `raw2ImageDps()`
 - If adding persistence:
   - start with `logs/RawDataLogger.py` or add a separate persistence module
+- If building live spoofing outputs:
+  - start with `realtime/pipeline.py`
+  - add logic in `realtime/measurement_builders/` before editing detector engines
+  - keep realtime detectors decoupled from serial I/O and web transport
 - If debugging receiver configuration:
   - inspect `send_command.py`, `test.py`, `record_ubx.sh`, and `log.py`
 
