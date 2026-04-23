@@ -62,6 +62,12 @@ This repository implements a real-time GNSS monitoring system focused on compari
 - The realtime runners now prepend the repo root to `sys.path` so they work both as:
   - `python3 -m realtime.live_runner`
   - `python3 realtime/live_runner.py`
+- The web runtime now also computes the four realtime detector outputs inside `thread/ReadSerialThread.py` and emits them to `templates/index.html` through Socket.IO as `realtime_outputs`.
+- `realtime/calibrate_thresholds.py` now calibrates initial thresholds from clean recorded UBX pairs and emits four threshold values for the current realtime stack:
+  - `sos_carrier`
+  - `sos_smoothed_pseudorange`
+  - `d3_carrier`
+  - `d3_smoothed_pseudorange`
 
 ## Documentation Intent
 

@@ -14,7 +14,14 @@ class SocketThread:
                dps_plot = ""
                spoofing = False
                cpu_load = psutil.cpu_percent(interval=0.5)
-               combined_samples, skyplot_data_1, skyplot_data_2, spectrum_data_1, spectrum_data_2 = data_queue.get()
+               (
+                   combined_samples,
+                   skyplot_data_1,
+                   skyplot_data_2,
+                   spectrum_data_1,
+                   spectrum_data_2,
+                   realtime_outputs,
+               ) = data_queue.get()
                print(f"combined_samples: {len(combined_samples)}")
                if current_time - last_plot_time >= config.PLOT_INTERVAL:
                    if config.FIX == 1:
@@ -36,7 +43,8 @@ class SocketThread:
                        "spectrum2": "data:image/png;base64," + spectrum_2,
                        "cpu_load": cpu_load,
                        "dps": "data:image/png;base64," + dps_plot,
-                       "spoofing": spoofing_detected
+                       "spoofing": spoofing_detected,
+                       "realtime_outputs": realtime_outputs,
                    })
            except Exception as e:
                print("Error in background thread:", e)

@@ -83,6 +83,50 @@
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
+
+        .realtime-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+            padding: 10px 20px 40px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .realtime-card {
+            background-color: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            text-align: left;
+        }
+
+        .realtime-card h3 {
+            margin-top: 0;
+            color: #0066cc;
+        }
+
+        .detector-status {
+            font-size: 1.2em;
+            font-weight: 600;
+        }
+
+        .detector-status.detected {
+            color: #cc0000;
+        }
+
+        .detector-status.normal {
+            color: #0066cc;
+        }
+
+        .detector-status.pending {
+            color: #666;
+        }
+
+        .detector-meta {
+            margin: 8px 0;
+            line-height: 1.5;
+        }
     </style>
 </head>
 
@@ -103,6 +147,32 @@
         <h2>Carrier phase Difference Plot</h2>
         <div class="plot-container">
             <img id="dpsPlotImg" src="" alt="Pseudorange Difference Plot">
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Realtime Detector Outputs</h2>
+        <div class="realtime-grid">
+            <div class="realtime-card" id="card_sos_carrier">
+                <h3>SoS Carrier</h3>
+                <div class="detector-status pending" id="status_sos_carrier">Waiting...</div>
+                <div class="detector-meta" id="meta_sos_carrier">No data yet.</div>
+            </div>
+            <div class="realtime-card" id="card_sos_smoothed_pseudorange">
+                <h3>SoS Smoothed Pseudorange</h3>
+                <div class="detector-status pending" id="status_sos_smoothed_pseudorange">Waiting...</div>
+                <div class="detector-meta" id="meta_sos_smoothed_pseudorange">No data yet.</div>
+            </div>
+            <div class="realtime-card" id="card_d3_carrier">
+                <h3>D3 Carrier</h3>
+                <div class="detector-status pending" id="status_d3_carrier">Waiting...</div>
+                <div class="detector-meta" id="meta_d3_carrier">No data yet.</div>
+            </div>
+            <div class="realtime-card" id="card_d3_smoothed_pseudorange">
+                <h3>D3 Smoothed Pseudorange</h3>
+                <div class="detector-status pending" id="status_d3_smoothed_pseudorange">Waiting...</div>
+                <div class="detector-meta" id="meta_d3_smoothed_pseudorange">No data yet.</div>
+            </div>
         </div>
     </div>
 
@@ -145,6 +215,51 @@
     <script>
         document.addEventListener("DOMContentLoaded", function () {
             const socket = io("http://192.168.5.2:5000");
+            const realtimeOutputIds = [
+                "sos_carrier",
+                "sos_smoothed_pseudorange",
+                "d3_carrier",
+                "d3_smoothed_pseudorange",
+            ];
+
+            function formatNumber(value) {
+                if (value === null || value === undefined) {
+                    return "N/A";
+                }
+                const num = Number(value);
+                return Number.isFinite(num) ? num.toFixed(6) : String(value);
+            }
+
+            function updateRealtimeCard(outputName, outputData) {
+                const statusNode = document.getElementById("status_" + outputName);
+                const metaNode = document.getElementById("meta_" + outputName);
+                if (!statusNode || !metaNode || !outputData) {
+                    return;
+                }
+
+                let statusText = "Pending";
+                let statusClass = "pending";
+                if (outputData.spoofing === true) {
+                    statusText = "Detected";
+                    statusClass = "detected";
+                } else if (outputData.spoofing === false) {
+                    statusText = "Normal";
+                    statusClass = "normal";
+                }
+
+                statusNode.innerText = statusText;
+                statusNode.className = "detector-status " + statusClass;
+
+                const suspectSvids = (outputData.suspect_svids || []).join(", ") || "None";
+                const visibleSvids = (outputData.visible_svids || []).join(", ") || "None";
+                metaNode.innerHTML =
+                    "Tow: " + formatNumber(outputData.tow_s) + "<br>" +
+                    "Score: " + formatNumber(outputData.score) + "<br>" +
+                    "Threshold: " + formatNumber(outputData.threshold) + "<br>" +
+                    "Reference SVID: " + (outputData.reference_svid ?? "N/A") + "<br>" +
+                    "Visible SVIDs: " + visibleSvids + "<br>" +
+                    "Suspect SVIDs: " + suspectSvids;
+            }
 
             socket.on("connect", () => {
                 console.log("Connected to server");
@@ -171,6 +286,11 @@
                 } if (data.spoofing !== undefined) {
                     document.getElementById("spoofingStatusDisplay").innerText = "Spoofing: " + (data.spoofing ? "Detected" : "Normal");
                     document.getElementById("spoofingStatusDisplay").style.color = data.spoofing ? "#cc0000" : "#0066cc"; // Red if detected, blue if normal
+                }
+                if (data.realtime_outputs) {
+                    realtimeOutputIds.forEach((outputName) => {
+                        updateRealtimeCard(outputName, data.realtime_outputs[outputName]);
+                    });
                 }
             });
         });

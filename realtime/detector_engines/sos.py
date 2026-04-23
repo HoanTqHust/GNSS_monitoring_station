@@ -22,7 +22,9 @@ class SoSDetectorEngine(DetectorEngine):
 
         values = np.asarray(list(frame.dd_values.values()), dtype=float)
         score = None if values.size == 0 else float(np.mean(np.square(values)))
-        spoofing = None if score is None or self.threshold is None else score >= self.threshold
+        # Following the paper/batch reference in this repo, low SoS indicates spoofing
+        # because authentic satellites should preserve non-zero DD dispersion.
+        spoofing = None if score is None or self.threshold is None else score < self.threshold
         return DetectorResult(
             detector_name=self.detector_name,
             measurement_name=self.measurement_name,
@@ -34,4 +36,3 @@ class SoSDetectorEngine(DetectorEngine):
             reference_svid=frame.reference_svid,
             metadata={"output_name": self.output_name, **frame.metadata},
         )
-
