@@ -1,118 +1,141 @@
+from __future__ import annotations
+
+import base64
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
 import serial
-from pyubx2 import UBXReader, UBX_PROTOCOL, NMEA_PROTOCOL   
-from models.RAWXData import RAWXData
+from pyubx2 import NMEA_PROTOCOL, UBX_PROTOCOL, UBXReader
+
 from config import config
-from logs.RawDataLogger import RawDataLogger
-from realtime.pipeline import RealtimeSpoofingPipeline
-from realtime.types import RealtimeEpochPair
+from models.RAWXData import RAWXData
+from thread.DurableRawQueue import DurableRawQueue
+
+LOGGER = logging.getLogger("thread.read_serial")
 
 
-#config
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 class ReadSerial:
-    def append_with_limit(queue, item, maxlen=config.BUFFER_SAMPLES):
-        queue.append(item)
-        if len(queue) > maxlen:
-            del queue[0]
+    @staticmethod
+    def _build_raw_frame_payload(receiver_name: str, raw_data: bytes, parsed_data: Any) -> dict[str, Any]:
+        identity = getattr(parsed_data, "identity", "UNKNOWN")
+        tow_value = getattr(parsed_data, "rcvTow", None)
+        tow_s = float(tow_value) if tow_value is not None else None
+        return {
+            "received_at_utc": _utc_now_iso(),
+            "receiver": receiver_name,
+            "identity": identity,
+            "tow_s": tow_s,
+            "raw_len": len(raw_data),
+            "raw_base64": base64.b64encode(raw_data).decode("ascii"),
+        }
 
     @staticmethod
-    def build_realtime_output_map(detector_results):
-        realtime_outputs = {}
-        for result in detector_results:
-            output_name = result.metadata.get(
-                "output_name", f"{result.detector_name}_{result.measurement_name}"
+    def _consume_reader(
+        reader: UBXReader,
+        receiver_name: str,
+        state: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]] | None:
+        raw_data, parsed_data = reader.read()
+        if raw_data is None or parsed_data is None:
+            return None
+
+        identity = getattr(parsed_data, "identity", "UNKNOWN")
+        if identity == "NAV-SAT":
+            state["skyplot"] = parsed_data
+        elif identity == "MON-SPAN":
+            state["spectrum"] = parsed_data
+        elif identity == "RXM-RAWX":
+            state["rawx"] = RAWXData(parsed_data)
+        elif identity == "NAV-PVT":
+            state["nav"] = parsed_data
+
+        return ("ubx_frame", ReadSerial._build_raw_frame_payload(receiver_name, raw_data, parsed_data))
+
+    @staticmethod
+    def _is_synced_epoch(state1: dict[str, Any], state2: dict[str, Any]) -> bool:
+        rawx1 = state1["rawx"]
+        rawx2 = state2["rawx"]
+        nav1 = state1["nav"]
+        nav2 = state2["nav"]
+        if rawx1 is None or rawx2 is None or nav1 is None or nav2 is None:
+            return False
+        return round(rawx1.rcvTow) == round(rawx2.rcvTow)
+
+    @staticmethod
+    def _build_epoch_payload(state1: dict[str, Any], state2: dict[str, Any]) -> dict[str, Any]:
+        rawx1 = state1["rawx"]
+        rawx2 = state2["rawx"]
+        if rawx1 is None or rawx2 is None:
+            raise ValueError("rawx state must not be None when building epoch payload")
+        return {
+            "received_at_utc": _utc_now_iso(),
+            "tow_s": min(float(rawx1.rcvTow), float(rawx2.rcvTow)),
+            "rawx_1": state1["rawx"],
+            "nav_1": state1["nav"],
+            "rawx_2": state2["rawx"],
+            "nav_2": state2["nav"],
+            "skyplot_data_1": state1["skyplot"],
+            "skyplot_data_2": state2["skyplot"],
+            "spectrum_data_1": state1["spectrum"],
+            "spectrum_data_2": state2["spectrum"],
+        }
+
+    @staticmethod
+    def read_serial(raw_queue_db_path: str | None = None) -> None:
+        queue_path = raw_queue_db_path or config.RAW_QUEUE_DB_PATH
+        durable_queue = DurableRawQueue(queue_path)
+
+        state1: dict[str, Any] = {"rawx": None, "nav": None, "skyplot": "", "spectrum": ""}
+        state2: dict[str, Any] = {"rawx": None, "nav": None, "skyplot": "", "spectrum": ""}
+
+        with serial.Serial(config.PORT1, baudrate=115200, timeout=1) as ser1, serial.Serial(
+            config.PORT2, baudrate=115200, timeout=1
+        ) as ser2:
+            LOGGER.info(
+                "serial_ingest_started port1=%s port2=%s queue_db_path=%s",
+                config.PORT1,
+                config.PORT2,
+                queue_path,
             )
-            realtime_outputs[output_name] = {
-                "tow_s": result.tow_s,
-                "score": result.score,
-                "threshold": result.threshold,
-                "spoofing": result.spoofing,
-                "reference_svid": result.reference_svid,
-                "visible_svids": list(result.visible_svids),
-                "suspect_svids": list(result.suspect_svids),
-                "measurement_name": result.measurement_name,
-                "detector_name": result.detector_name,
-            }
-        return realtime_outputs
+            reader1 = UBXReader(ser1, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
+            reader2 = UBXReader(ser2, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
 
-    @staticmethod
-    def read_serial(data_queue):
-        logger = RawDataLogger()
-        realtime_pipeline = RealtimeSpoofingPipeline()
-        ser1 = serial.Serial(config.PORT1, baudrate=115200, timeout=1)
-        ser2 = serial.Serial(config.PORT2, baudrate=115200, timeout=1)
-        ubr1 = UBXReader(ser1, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
-        ubr2 = UBXReader(ser2, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
-        timer = 0
-        rawx1 = rawx2 = nav1 = nav2 = None
-    
-        skyplot_data_1 = ""
-        spectrum_data_1 = ""
-        skyplot_data_2 = ""
-        spectrum_data_2 = ""
-        combined_samples = []
-    
-        while True:
-            try:
-                raw_data_1, parsed_data_1 = ubr1.read()
-                raw_data_2, parsed_data_2 = ubr2.read()
-                #logger.log(raw_data_1, raw_data_2)
-                if (raw_data_1 is None) or (raw_data_2 is None):
-                    continue
-                if parsed_data_1.identity == "NAV-SAT":
-                    skyplot_data_1 = parsed_data_1
-    
-                if parsed_data_1.identity == "MON-SPAN":
-                    spectrum_data_1 = parsed_data_1
-    
-                if parsed_data_1.identity == "RXM-RAWX":
-                    rawx1 = RAWXData(parsed_data_1)
-                if parsed_data_1.identity == "NAV-PVT":
-                    nav1 = parsed_data_1
-    
-                if parsed_data_2.identity == "NAV-SAT":
-                    skyplot_data_2 = parsed_data_2
-    
-                if parsed_data_2.identity == "MON-SPAN":
-                    spectrum_data_2 = parsed_data_2
-    
-                if parsed_data_2.identity == "RXM-RAWX":
-                    rawx2 = RAWXData(parsed_data_2)
-                if parsed_data_2.identity == "NAV-PVT":
-                    nav2 = parsed_data_2
-    
-                # Append only if both devices have valid RAWX and NAV-PVT
-                #print(f"{rawx1.rcvTow} and {rawx2.rcvTow}")
-                if rawx1 and nav1 and rawx2 and nav2 and (round(rawx1.rcvTow) == round(rawx2.rcvTow)):
-                # if rawx1 and nav1 and rawx2 and nav2:
-                    print(f"{rawx1.rcvTow} and {rawx2.rcvTow}")
-                    epoch_pair = RealtimeEpochPair(
-                        tow_s=min(float(rawx1.rcvTow), float(rawx2.rcvTow)),
-                        rawx_1=rawx1,
-                        nav_1=nav1,
-                        rawx_2=rawx2,
-                        nav_2=nav2,
-                    )
-                    detector_results = realtime_pipeline.process_epoch(epoch_pair)
-                    realtime_outputs = ReadSerial.build_realtime_output_map(detector_results)
-                    ReadSerial.append_with_limit(combined_samples, (rawx1, nav1, rawx2, nav2))
-                    rawx1 = rawx2 = nav1 = nav2 = None
-                    try:
-                        if data_queue.full():
-                            data_queue.get_nowait()  # bỏ phần tử cũ
-                        data_queue.put(
-                            (
-                                combined_samples,
-                                skyplot_data_1,
-                                skyplot_data_2,
-                                spectrum_data_1,
-                                spectrum_data_2,
-                                realtime_outputs,
-                            )
+            while True:
+                events_to_enqueue: list[tuple[str, dict[str, Any]]] = []
+                try:
+                    event1 = ReadSerial._consume_reader(reader1, "rx1", state1)
+                    if event1 is not None:
+                        events_to_enqueue.append(event1)
+
+                    event2 = ReadSerial._consume_reader(reader2, "rx2", state2)
+                    if event2 is not None:
+                        events_to_enqueue.append(event2)
+
+                    if ReadSerial._is_synced_epoch(state1, state2):
+                        epoch_payload = ReadSerial._build_epoch_payload(state1, state2)
+                        events_to_enqueue.append(("epoch_pair", epoch_payload))
+                        LOGGER.debug(
+                            "synced_epoch_enqueued tow_s=%.3f rx1_tow=%.3f rx2_tow=%.3f",
+                            epoch_payload["tow_s"],
+                            float(state1["rawx"].rcvTow),
+                            float(state2["rawx"].rcvTow),
                         )
-                    except Exception as e:
-                        print("Queue put error:", e)
-            except Exception as e:
-                print("\r\n")
-                print("Error in get ublox data thread:", e)
+                        state1["rawx"] = None
+                        state1["nav"] = None
+                        state2["rawx"] = None
+                        state2["nav"] = None
+
+                    if events_to_enqueue:
+                        last_seq = durable_queue.enqueue_many(events_to_enqueue)
+                        LOGGER.debug(
+                            "raw_events_enqueued count=%s last_seq=%s",
+                            len(events_to_enqueue),
+                            last_seq,
+                        )
+                except Exception:
+                    LOGGER.exception("serial_ingest_error")

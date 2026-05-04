@@ -29,13 +29,14 @@
 | Module | Role | Key files | Edit here when | Depends on | Used by |
 | --- | --- | --- | --- | --- | --- |
 | Web runtime | Builds the Flask app, routes, and startup flow | `app.py`, `templates/index.html`, `templates/about.html` | changing routes, startup behavior, or dashboard rendering | `flask`, `flask_socketio`, `thread/*`, `config.py` | web users, background workers |
-| Serial ingestion | Reads UBX messages from two receivers, synchronizes samples, runs the realtime pipeline, and pushes data into the queue | `thread/ReadSerialThread.py` | changing serial ports, message types, synchronization logic, or detector payload mapping | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py`, `realtime/pipeline.py` | `app.py`, `thread/SocketThread.py` |
+| Serial ingestion | Reads UBX messages from two receivers, emits raw frame events, and emits synchronized epoch-pair events into durable storage | `thread/ReadSerialThread.py` | changing serial ports, message types, synchronization logic, or event payload mapping | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py`, `thread/DurableRawQueue.py` | `app.py`, `thread/SocketThread.py` |
 | Realtime detector skeleton | Converts normalized epochs into measurement frames and writes separated detector outputs | `realtime/pipeline.py`, `realtime/measurement_builders/*`, `realtime/detector_engines/*`, `realtime/output_writer.py` | adding live SoS/D3 flow, changing output format, preparing MQTT/REST integration | `models`-compatible RAWX objects, `numpy`, filesystem output | future live detector workers or publishers |
 | Standalone live runner | Reads live UBX streams and feeds synchronized epochs into the realtime pipeline | `realtime/live_runner.py` | running the detector stack without touching the web app runtime | `serial`, `pyubx2`, `config.py`, `models/RAWXData.py`, `realtime/pipeline.py` | operators, live smoke tests |
 | Threshold calibration | Reads clean recorded UBX files, synchronizes epochs, and estimates four initial thresholds for the current realtime stack | `realtime/calibrate_thresholds.py` | deriving initial SoS/D3 thresholds from clean baseline data | `pyubx2`, `models/RAWXData.py`, `realtime/measurement_builders/*`, `numpy` | operators, future config wiring |
 | Visualization + detection | Computes carrier phase differences, creates skyplot/spectrum/DPS images, flags spoofing | `draws/UbloxChart.py` | changing the algorithm, plotting, or thresholds | `numpy`, `matplotlib`, `sklearn`, `config.py` | `thread/SocketThread.py` |
 | Data model | Converts parsed UBX messages into Python objects for downstream processing | `models/RAWXData.py`, `models/SatelliteData.py` | changing extracted fields or per-satellite metadata | parsed UBX objects | `thread/ReadSerialThread.py`, `draws/UbloxChart.py` |
-| Streaming worker | Pulls queue data, encodes images, emits frontend events including realtime detector outputs | `thread/SocketThread.py` | changing emit cadence, payload shape, or metrics | `draws/UbloxChart.py`, `psutil`, `config.py` | `app.py`, frontend |
+| Streaming worker | Consumes durable queue events, runs realtime detectors, emits plot updates and raw frame batches | `thread/SocketThread.py` | changing consumer ACK policy, emit cadence, payload shape, or metrics | `thread/DurableRawQueue.py`, `realtime/pipeline.py`, `draws/UbloxChart.py`, `psutil`, `config.py` | `app.py`, frontend |
+| Durable raw queue | Persists raw events and tracks per-consumer ACK offsets for replay | `thread/DurableRawQueue.py` | changing durability, batch read semantics, or consumer ACK policy | `sqlite3`, `pickle`, filesystem | serial producer, socket consumer |
 | Logging / capture | Persists raw UBX data for debugging and later analysis | `logs/RawDataLogger.py`, `log.py`, `record_ubx.sh` | changing log format, storage path, or number of receivers | `os`, `datetime`, `serial`, `pyubx2` | operators, debugging flow |
 | Device config tools | Sends UBX commands to configure the receiver | `send_command.py` | changing baudrate, message enablement, or persisted receiver config | `serial`, custom UBX message builder | operators |
 
@@ -46,7 +47,9 @@
   - `templates/index.html` loads the Socket.IO client.
   - The client listens for the `update_image` event.
 - Data flow:
-  - Serial device -> `ReadSerial.read_serial()` -> `data_queue` -> `SocketThread.background_thread()` -> `UbloxChart` -> base64 PNG -> browser
+  - Serial device -> `ReadSerial.read_serial()` -> durable raw queue (`thread/DurableRawQueue.py`)
+  - Durable queue -> `SocketThread.background_thread()` -> detector + `UbloxChart` -> base64 PNG -> browser
+  - Durable queue -> `SocketThread.background_thread()` -> `raw_data_batch` -> browser raw stream panel
 - External integrations:
   - Serial ports under `/dev/ttyACM*`
   - Socket.IO CDN loaded from `templates/index.html`
@@ -59,9 +62,13 @@
 - If changing serial ingestion:
   - edit `config.py` and `thread/ReadSerialThread.py`
   - verify the required UBX message types and the `rcvTow` synchronization rule
+  - verify enqueue topics (`ubx_frame`, `epoch_pair`) and payload shape compatibility
 - If changing the dashboard payload:
   - edit `thread/SocketThread.py` and `templates/index.html`
   - keep payload keys aligned between server and client
+- If changing queue reliability behavior:
+  - edit `thread/DurableRawQueue.py` and related config in `config.py`
+  - validate ACK/replay behavior with `tests/test_durable_raw_queue.py`
 - If changing the detection algorithm:
   - edit `draws/UbloxChart.py`
   - review `calc_pseudorange()`, `process_ubx_data()`, and `raw2ImageDps()`
@@ -78,16 +85,36 @@
 
 - Main run command:
   - `python app.py`
+- Queue durability tests:
+  - `python3 -m unittest discover -s tests -p 'test_durable_raw_queue.py' -v`
 - Manual capture utilities:
   - `python log.py`
   - `bash record_ubx.sh`
   - `python test.py`
 - Regression attention:
-  - whether the queue fills and drops samples
+  - whether durable queue consumer lag grows without bound
+  - whether ACK sequence advances for `RAW_QUEUE_CONSUMER_ID`
+  - whether `raw_data_batch` sequence gaps stay at zero in stable runs
+  - whether frontend raw tables for `rx1` and `rx2` stay separated and ordered by latest-first index
   - whether `rcvTow` synchronization remains correct
   - whether the frontend still receives `update_image`
   - whether satellite filtering by `ELE_MASK` still behaves correctly
   - whether the hard-coded frontend IP still matches the actual server
+
+## Forward Architecture Note (Raw Throughput, Historical)
+
+- Before Option B implementation, bottleneck surfaces for high-rate raw streams were:
+  - `thread/ReadSerialThread.py` drops oldest entry when queue is full and keeps only a bounded in-memory sample window.
+  - `thread/SocketThread.py` does CPU-heavy image generation in the same consumer loop that drains `data_queue`.
+- Recommended split for reliable raw delivery:
+  - `serial_ingest` (read + frame + seq + persist/spool)
+  - `raw_bus` (bounded backpressure with drop policy disabled for raw path)
+  - `consumers` (RTKLIB parser, detector pipeline, app publisher) as independent workers
+- Observability required before/after changes:
+  - ingress rate (bytes/s, frames/s)
+  - queue depth and max depth
+  - end-to-end lag per consumer
+  - dropped frame counter (must stay zero for raw guarantee scope)
 
 ## Cross-Cutting Concerns
 
@@ -96,14 +123,16 @@
 - Auth:
   - there is no authentication in the web app
 - Persistence:
-  - raw UBX logging is the only persistence currently present
+  - durable raw queue persistence now exists via `thread/DurableRawQueue.py` (SQLite WAL)
+  - raw UBX file logging still exists through `logs/RawDataLogger.py`
 - Testing:
-  - there is no automated unit or integration test suite
+  - deterministic unit tests exist for queue ACK/replay semantics (`tests/test_durable_raw_queue.py`)
+  - end-to-end automated tests for the full spoofing flow are still missing
 - Build and deploy:
   - no build or deployment pipeline is present in the repo
 - Hotspots:
   - `draws/UbloxChart.py` carries the most mixed responsibilities
-  - `thread/ReadSerialThread.py` and `thread/SocketThread.py` rely on broad `except Exception` handling and `print`
+  - `thread/ReadSerialThread.py` and `thread/SocketThread.py` still rely on broad `except Exception` handling
   - `templates/index.html` is tightly coupled to a specific server address
 
 ## Unknowns

@@ -4,10 +4,11 @@
 
 This is a Python project for reading UBX data from u-blox GNSS devices, computing and visualizing carrier phase double differences in real time, and flagging possible spoofing behavior based on carrier phase trend similarity.
 
-The application has three main layers:
+The application has four main layers:
 
 - `app.py`: Flask + Socket.IO web server
-- `thread/ReadSerialThread.py`: serial ingestion and sample synchronization for two receivers
+- `thread/ReadSerialThread.py`: serial ingestion and durable queue producer for two receivers
+- `thread/DurableRawQueue.py`: SQLite WAL queue with per-consumer ACK offsets
 - `draws/UbloxChart.py`: data processing, skyplot generation, spectrum plotting, and carrier phase difference plotting
 
 ## Repository Goals
@@ -22,12 +23,16 @@ The application has three main layers:
 
 Main runtime flow:
 
-1. `app.py` creates a `multiprocessing.Queue`.
+1. `app.py` initializes a durable SQLite queue database.
 2. A separate process runs `ReadSerial.read_serial()` to read GNSS data from two serial ports.
-3. When both devices have matching `RXM-RAWX` and `NAV-PVT` timestamps, the synchronized sample set is pushed into the queue.
-4. `SocketThread.background_thread()` consumes queued data on a `PLOT_INTERVAL` cadence.
-5. `UbloxChart` generates skyplot, spectrum, and carrier phase difference images.
-6. Flask-SocketIO emits the `update_image` event to the frontend in `templates/index.html`.
+3. Serial ingestion writes:
+   - `ubx_frame` events (full raw UBX payload in base64)
+   - `epoch_pair` events (synchronized RAWX/NAV pair for detector processing)
+4. `SocketThread.background_thread()` consumes durable queue events using ACK offsets.
+5. `UbloxChart` generates skyplot, spectrum, and carrier phase difference images from `epoch_pair` records.
+6. Flask-SocketIO emits:
+   - `update_image` for detector/plot updates
+   - `raw_data_batch` for raw stream monitoring in the frontend
 
 ## Directory Structure
 
@@ -43,6 +48,7 @@ double_difference_cp/
 |   |-- RAWXData.py
 |   `-- SatelliteData.py
 |-- thread/
+|   |-- DurableRawQueue.py
 |   |-- ReadSerialThread.py
 |   `-- SocketThread.py
 |-- draws/
@@ -77,10 +83,18 @@ double_difference_cp/
   - `NAV-PVT`
   - `NAV-SAT`
   - `MON-SPAN`
-- Pairs samples when `round(rawx1.rcvTow) == round(rawx2.rcvTow)`
-- Pushes the combined sample window into a `multiprocessing.Queue`
+- Emits one durable event per parsed UBX frame (`ubx_frame`)
+- Pairs samples when `round(rawx1.rcvTow) == round(rawx2.rcvTow)` and writes `epoch_pair` events
 
-### 3. Data Processing and Plotting
+### 3. Durable Queue
+
+- File: `thread/DurableRawQueue.py`
+- Uses SQLite WAL mode
+- Stores events in append-only sequence order
+- Tracks consumer ACK offsets for replay and retry behavior
+- Enables at-least-once delivery semantics across process restarts
+
+### 4. Data Processing and Plotting
 
 - File: `draws/UbloxChart.py`
 - Main responsibilities:
@@ -91,19 +105,22 @@ double_difference_cp/
   - estimate per-satellite trend coefficients with `LinearRegression`
   - mark spoofing when a cluster of satellites shares similar trend coefficients
 
-### 4. Socket Background Worker
+### 5. Socket Background Worker
 
 - File: `thread/SocketThread.py`
-- Reads data from the queue
+- Reads from durable queue using consumer ID + ACK offset
+- Runs realtime detectors from `epoch_pair` events
 - Calls `UbloxChart` to generate base64 images
-- Emits the `update_image` event to the frontend
+- Emits:
+  - `update_image` event to frontend
+  - `raw_data_batch` event with raw frame batches
 
-### 5. Data Models
+### 6. Data Models
 
 - `models/RAWXData.py`: wraps a parsed `RXM-RAWX` message
 - `models/SatelliteData.py`: extracts per-satellite fields such as `prMes`, `cpMes`, `doMes`, `gnssId`, `svId`, and `sigId`
 
-### 6. Supporting Tools
+### 7. Supporting Tools
 
 - `send_command.py`: sends UBX commands to configure the receiver
 - `log.py`: logs raw UBX data from three serial ports into `logs_data/YYYY-MM-DD/`
@@ -124,6 +141,11 @@ FIX=0
 HOSTSOCKET=0.0.0.0
 PORTSOCKET=5000
 ELE_MASK=13
+RAW_QUEUE_DB_PATH=logs_data/raw_bus.sqlite3
+RAW_QUEUE_CONSUMER_ID=socket_pipeline
+RAW_QUEUE_BATCH_SIZE=200
+RAW_QUEUE_POLL_INTERVAL=0.05
+RAW_EMIT_BATCH_SIZE=100
 ```
 
 Quick meaning:
@@ -134,6 +156,7 @@ Quick meaning:
 - `FIX`: enables extra debug output
 - `HOSTSOCKET`, `PORTSOCKET`: Flask-SocketIO bind address
 - `ELE_MASK`: elevation threshold for satellite filtering
+- `RAW_QUEUE_*`: durable queue storage and consumer tuning knobs
 
 ## How to Run
 
@@ -170,6 +193,7 @@ The dashboard in `templates/index.html` displays:
 - carrier phase difference plot
 - spectrum view for both devices
 - skyplot view for both devices
+- a raw UBX stream panel (sequence, gaps, duplicate replay indicators)
 
 Important note:
 
@@ -187,7 +211,7 @@ Important note:
 - `requirements.txt` is very large and does not reflect the minimal runtime dependencies of the current repo.
 - The frontend depends on a fixed IP address.
 - The repo contains files such as `cookies.txt`, `login.txt`, and `.env`; these should be treated as sensitive data.
-- There is currently no automated test suite for the main carrier phase / spoofing flow.
+- Automated tests currently cover durable queue semantics (`tests/test_durable_raw_queue.py`), but there is still no broad automated suite for the end-to-end spoofing pipeline.
 - Error handling and observability still rely heavily on `print`, not structured logging.
 
 ## Recommended Reading Order
