@@ -2,6 +2,15 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return float(value)
+
+
 class config:
      
     PORT1 = os.environ.get("PORT1", "/dev/ttyACM0")
@@ -23,12 +32,28 @@ class config:
     
     ELE_MASK = int(os.environ.get("ELE_MASK", 15))
 
-    RAW_QUEUE_DB_PATH = os.environ.get("RAW_QUEUE_DB_PATH", "logs_data/raw_bus.sqlite3")
+    RAM_INGRESS_QUEUE_SIZE = int(os.environ.get("RAM_INGRESS_QUEUE_SIZE", 5000))
 
-    RAW_QUEUE_CONSUMER_ID = os.environ.get("RAW_QUEUE_CONSUMER_ID", "socket_pipeline")
+    RAM_DETECT_QUEUE_SIZE = int(os.environ.get("RAM_DETECT_QUEUE_SIZE", 2000))
 
-    RAW_QUEUE_BATCH_SIZE = int(os.environ.get("RAW_QUEUE_BATCH_SIZE", 200))
+    RAM_RAW_QUEUE_SIZE = int(os.environ.get("RAM_RAW_QUEUE_SIZE", 5000))
 
-    RAW_QUEUE_POLL_INTERVAL = float(os.environ.get("RAW_QUEUE_POLL_INTERVAL", 0.05))
+    RAM_QUEUE_POLL_INTERVAL = float(os.environ.get("RAM_QUEUE_POLL_INTERVAL", 0.02))
 
-    RAW_EMIT_BATCH_SIZE = int(os.environ.get("RAW_EMIT_BATCH_SIZE", 100))
+    RAM_RAW_EMIT_BATCH_SIZE = int(os.environ.get("RAM_RAW_EMIT_BATCH_SIZE", 100))
+
+    # Realtime detector test thresholds (to avoid perpetual "Pending").
+    SOS_CARRIER_THRESHOLD = _env_float("SOS_CARRIER_THRESHOLD", 0.09)
+    SOS_SMOOTHED_PSEUDORANGE_THRESHOLD = _env_float(
+        "SOS_SMOOTHED_PSEUDORANGE_THRESHOLD",
+        1.10,
+    )
+    D3_CARRIER_SIMILARITY_THRESHOLD = _env_float(
+        "D3_CARRIER_SIMILARITY_THRESHOLD",
+        0.0,
+    )
+    D3_SMOOTHED_PSEUDORANGE_SIMILARITY_THRESHOLD = _env_float(
+        "D3_SMOOTHED_PSEUDORANGE_SIMILARITY_THRESHOLD",
+        0.0,
+    )
+    D3_MIN_CLUSTER_SIZE = int(os.environ.get("D3_MIN_CLUSTER_SIZE", 3))

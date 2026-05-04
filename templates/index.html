@@ -464,15 +464,22 @@
                 const lastAcked = queueStats?.last_acked_seq ?? "N/A";
                 const pendingEvents = queueStats?.pending_events ?? "N/A";
                 const totalEvents = queueStats?.total_events ?? "N/A";
+                const ingressBacklog = queueStats?.ingress_backlog ?? "N/A";
+                const detectBacklog = queueStats?.detect_backlog ?? "N/A";
+                const rawBacklog = queueStats?.raw_backlog ?? "N/A";
+                const detectDropped = queueStats?.detect_dropped ?? "N/A";
+                const rawDropped = queueStats?.raw_dropped ?? "N/A";
                 rawMetricsNode.innerHTML =
                     "Frames received in browser: " + rawState.received + "<br>" +
                     "Last batch size: " + rawState.lastBatchCount + "<br>" +
                     "Last sequence: " + (rawState.lastSeq ?? "N/A") + "<br>" +
-                    "Duplicate frames (at-least-once replay): " + rawState.duplicates + "<br>" +
+                    "Duplicate seq frames: " + rawState.duplicates + "<br>" +
                     "Sequence gaps observed in browser: " + rawState.gaps + "<br>" +
                     "Queue total events: " + totalEvents + "<br>" +
-                    "Queue last acked seq: " + lastAcked + "<br>" +
-                    "Queue pending events: " + pendingEvents;
+                    "Detect processed count: " + lastAcked + "<br>" +
+                    "Queue pending events: " + pendingEvents + "<br>" +
+                    "Ingress backlog: " + ingressBacklog + " | Detect backlog: " + detectBacklog + " | Raw backlog: " + rawBacklog + "<br>" +
+                    "Detect dropped: " + detectDropped + " | Raw dropped: " + rawDropped;
             }
 
             function buildIdentitySummary(identityCounts) {

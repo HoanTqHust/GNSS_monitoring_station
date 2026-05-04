@@ -9,9 +9,9 @@ This file explains the code structure by responsibility so that a new developer 
 - `app.py`
   - creates the Flask app
   - registers the `/` and `/about` routes
-  - initializes the durable raw queue DB
+  - initializes RAM ingress/detect/raw queues
   - starts the serial-reading process
-  - starts the Socket.IO background task
+  - starts router + detect consumer + raw consumer background tasks
 
 ## Group 2: Configuration
 
@@ -24,17 +24,16 @@ This file explains the code structure by responsibility so that a new developer 
 - `thread/ReadSerialThread.py`
   - opens `PORT1` and `PORT2`
   - reads `RXM-RAWX`, `NAV-PVT`, `NAV-SAT`, and `MON-SPAN`
-  - writes `ubx_frame` events (full raw UBX payload) into the durable queue
-  - creates `RAWXData` objects
+  - calls RTKLIB-stage normalization for parsed frames
+  - writes `ubx_frame` events (full raw UBX payload) into RAM ingress queue
   - pairs data when both receivers have matching observation time
-  - writes synchronized `epoch_pair` events into the durable queue
+  - writes synchronized `epoch_pair` events into RAM ingress queue
 
-## Group 4: Durable Event Queue
+## Group 4: RTKLIB Stage Adapter
 
-- `thread/DurableRawQueue.py`
-  - stores append-only events in SQLite WAL
-  - tracks consumer ACK offsets
-  - replays unacked events (at-least-once)
+- `thread/RTKLIBStage.py`
+  - normalizes parsed UBX data into RTKLIB-stage payloads
+  - provides frame payload and synchronized epoch payload builders
 
 ## Group 5: Data Models
 
@@ -57,11 +56,12 @@ This file explains the code structure by responsibility so that a new developer 
 ## Group 7: Streaming to the Client
 
 - `thread/SocketThread.py`
-  - reads data from durable queue with ACK offsets
+  - routes RAM ingress events into detect and raw consumer queues
+  - applies drop policy when bounded queues are full
   - measures CPU load
-  - calls plotting functions
+  - calls detector and plotting functions on detect stream
   - emits `update_image` to the frontend
-  - emits `raw_data_batch` with raw frames
+  - emits `raw_data_batch` with raw frames from raw stream
 
 ## Group 8: Frontend
 
@@ -99,7 +99,8 @@ This file explains the code structure by responsibility so that a new developer 
 ## Main Edit Guidance
 
 - For ingestion changes: start with `thread/ReadSerialThread.py`
-- For durability/retry behavior: update `thread/DurableRawQueue.py`
+- For payload normalization stage: update `thread/RTKLIBStage.py`
+- For queue routing/overflow behavior: update `thread/SocketThread.py`
 - For dashboard changes: update both `thread/SocketThread.py` and `templates/index.html`
 - For algorithm changes: focus on `draws/UbloxChart.py`
 - For runtime/config changes: review `config.py` and `.env`

@@ -23,20 +23,20 @@
 - `templates/`: HTML frontend templates
 - `docs/`: project memory and repository documentation
 - `record_ubx.sh`, `log.py`, `send_command.py`, `test.py`: operational and debugging scripts
+- `README_RAW_UBX_STREAM_VI.md`: Vietnamese field-by-field reference for raw stream payload/UI metrics/identity groups
 
 ## Module Map
 
 | Module | Role | Key files | Edit here when | Depends on | Used by |
 | --- | --- | --- | --- | --- | --- |
 | Web runtime | Builds the Flask app, routes, and startup flow | `app.py`, `templates/index.html`, `templates/about.html` | changing routes, startup behavior, or dashboard rendering | `flask`, `flask_socketio`, `thread/*`, `config.py` | web users, background workers |
-| Serial ingestion | Reads UBX messages from two receivers, emits raw frame events, and emits synchronized epoch-pair events into durable storage | `thread/ReadSerialThread.py` | changing serial ports, message types, synchronization logic, or event payload mapping | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py`, `thread/DurableRawQueue.py` | `app.py`, `thread/SocketThread.py` |
+| Serial ingestion | Reads UBX messages from two receivers, runs RTKLIB-stage normalization, and emits events into RAM ingress queue | `thread/ReadSerialThread.py`, `thread/RTKLIBStage.py` | changing serial ports, message types, normalization shape, or event payload mapping | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py`, `multiprocessing.Queue` | `app.py`, `thread/SocketThread.py` |
 | Realtime detector skeleton | Converts normalized epochs into measurement frames and writes separated detector outputs | `realtime/pipeline.py`, `realtime/measurement_builders/*`, `realtime/detector_engines/*`, `realtime/output_writer.py` | adding live SoS/D3 flow, changing output format, preparing MQTT/REST integration | `models`-compatible RAWX objects, `numpy`, filesystem output | future live detector workers or publishers |
 | Standalone live runner | Reads live UBX streams and feeds synchronized epochs into the realtime pipeline | `realtime/live_runner.py` | running the detector stack without touching the web app runtime | `serial`, `pyubx2`, `config.py`, `models/RAWXData.py`, `realtime/pipeline.py` | operators, live smoke tests |
 | Threshold calibration | Reads clean recorded UBX files, synchronizes epochs, and estimates four initial thresholds for the current realtime stack | `realtime/calibrate_thresholds.py` | deriving initial SoS/D3 thresholds from clean baseline data | `pyubx2`, `models/RAWXData.py`, `realtime/measurement_builders/*`, `numpy` | operators, future config wiring |
 | Visualization + detection | Computes carrier phase differences, creates skyplot/spectrum/DPS images, flags spoofing | `draws/UbloxChart.py` | changing the algorithm, plotting, or thresholds | `numpy`, `matplotlib`, `sklearn`, `config.py` | `thread/SocketThread.py` |
 | Data model | Converts parsed UBX messages into Python objects for downstream processing | `models/RAWXData.py`, `models/SatelliteData.py` | changing extracted fields or per-satellite metadata | parsed UBX objects | `thread/ReadSerialThread.py`, `draws/UbloxChart.py` |
-| Streaming worker | Consumes durable queue events, runs realtime detectors, emits plot updates and raw frame batches | `thread/SocketThread.py` | changing consumer ACK policy, emit cadence, payload shape, or metrics | `thread/DurableRawQueue.py`, `realtime/pipeline.py`, `draws/UbloxChart.py`, `psutil`, `config.py` | `app.py`, frontend |
-| Durable raw queue | Persists raw events and tracks per-consumer ACK offsets for replay | `thread/DurableRawQueue.py` | changing durability, batch read semantics, or consumer ACK policy | `sqlite3`, `pickle`, filesystem | serial producer, socket consumer |
+| Streaming worker | Routes ingress events into detect/raw RAM queues, runs realtime detectors, emits plot updates and raw frame batches | `thread/SocketThread.py` | changing fan-out policy, overflow policy, emit cadence, payload shape, or metrics | `queue`, `realtime/pipeline.py`, `draws/UbloxChart.py`, `psutil`, `config.py` | `app.py`, frontend |
 | Logging / capture | Persists raw UBX data for debugging and later analysis | `logs/RawDataLogger.py`, `log.py`, `record_ubx.sh` | changing log format, storage path, or number of receivers | `os`, `datetime`, `serial`, `pyubx2` | operators, debugging flow |
 | Device config tools | Sends UBX commands to configure the receiver | `send_command.py` | changing baudrate, message enablement, or persisted receiver config | `serial`, custom UBX message builder | operators |
 
@@ -47,9 +47,10 @@
   - `templates/index.html` loads the Socket.IO client.
   - The client listens for the `update_image` event.
 - Data flow:
-  - Serial device -> `ReadSerial.read_serial()` -> durable raw queue (`thread/DurableRawQueue.py`)
-  - Durable queue -> `SocketThread.background_thread()` -> detector + `UbloxChart` -> base64 PNG -> browser
-  - Durable queue -> `SocketThread.background_thread()` -> `raw_data_batch` -> browser raw stream panel
+  - Serial device -> `ReadSerial.read_serial()` -> RTKLIB-stage normalization -> RAM ingress queue
+  - RAM ingress queue -> `SocketThread.router_thread()` -> detect queue + raw queue
+  - Detect queue -> `SocketThread.detect_consumer_thread()` -> detector + `UbloxChart` -> `update_image`
+  - Raw queue -> `SocketThread.raw_consumer_thread()` -> `raw_data_batch`
 - External integrations:
   - Serial ports under `/dev/ttyACM*`
   - Socket.IO CDN loaded from `templates/index.html`
@@ -62,13 +63,15 @@
 - If changing serial ingestion:
   - edit `config.py` and `thread/ReadSerialThread.py`
   - verify the required UBX message types and the `rcvTow` synchronization rule
+  - keep RTKLIB-stage payload shape aligned in `thread/RTKLIBStage.py`
   - verify enqueue topics (`ubx_frame`, `epoch_pair`) and payload shape compatibility
 - If changing the dashboard payload:
   - edit `thread/SocketThread.py` and `templates/index.html`
   - keep payload keys aligned between server and client
 - If changing queue reliability behavior:
-  - edit `thread/DurableRawQueue.py` and related config in `config.py`
-  - validate ACK/replay behavior with `tests/test_durable_raw_queue.py`
+  - edit queue sizing / poll configs in `config.py`
+  - edit overflow routing policy in `thread/SocketThread.py`
+  - validate with `tests/test_ram_queue_flow.py`
 - If changing the detection algorithm:
   - edit `draws/UbloxChart.py`
   - review `calc_pseudorange()`, `process_ubx_data()`, and `raw2ImageDps()`
@@ -85,15 +88,15 @@
 
 - Main run command:
   - `python app.py`
-- Queue durability tests:
-  - `python3 -m unittest discover -s tests -p 'test_durable_raw_queue.py' -v`
+- RAM queue flow tests:
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v`
 - Manual capture utilities:
   - `python log.py`
   - `bash record_ubx.sh`
   - `python test.py`
 - Regression attention:
-  - whether durable queue consumer lag grows without bound
-  - whether ACK sequence advances for `RAW_QUEUE_CONSUMER_ID`
+  - whether ingress queue backlog grows without bound
+  - whether detect/raw queue drop counters increase under expected load
   - whether `raw_data_batch` sequence gaps stay at zero in stable runs
   - whether frontend raw tables for `rx1` and `rx2` stay separated and ordered by latest-first index
   - whether `rcvTow` synchronization remains correct
@@ -106,10 +109,10 @@
 - Before Option B implementation, bottleneck surfaces for high-rate raw streams were:
   - `thread/ReadSerialThread.py` drops oldest entry when queue is full and keeps only a bounded in-memory sample window.
   - `thread/SocketThread.py` does CPU-heavy image generation in the same consumer loop that drains `data_queue`.
-- Recommended split for reliable raw delivery:
-  - `serial_ingest` (read + frame + seq + persist/spool)
-  - `raw_bus` (bounded backpressure with drop policy disabled for raw path)
-  - `consumers` (RTKLIB parser, detector pipeline, app publisher) as independent workers
+- Current runtime split:
+  - `serial_ingest` (read + RTKLIB-stage normalization + event enqueue)
+  - `raw_bus` in RAM (`multiprocessing.Queue` ingress + routed detect/raw queues)
+  - `consumers` (detect/app and raw/app) as independent workers
 - Observability required before/after changes:
   - ingress rate (bytes/s, frames/s)
   - queue depth and max depth
@@ -120,13 +123,14 @@
 
 - Config and env:
   - `config.py` loads `.env` and centralizes runtime settings
+  - realtime detector thresholds are now configurable from env (`SOS_*`, `D3_*`) and wired into `realtime/pipeline.py`
 - Auth:
   - there is no authentication in the web app
 - Persistence:
-  - durable raw queue persistence now exists via `thread/DurableRawQueue.py` (SQLite WAL)
+  - runtime path is RAM-only (no SQLite persistence)
   - raw UBX file logging still exists through `logs/RawDataLogger.py`
 - Testing:
-  - deterministic unit tests exist for queue ACK/replay semantics (`tests/test_durable_raw_queue.py`)
+  - deterministic unit tests exist for RAM queue sequencing and overflow helper logic (`tests/test_ram_queue_flow.py`)
   - end-to-end automated tests for the full spoofing flow are still missing
 - Build and deploy:
   - no build or deployment pipeline is present in the repo
