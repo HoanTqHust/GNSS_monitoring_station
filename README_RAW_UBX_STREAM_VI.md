@@ -5,6 +5,7 @@
 File này giải thích chi tiết:
 
 - Từng trường dữ liệu đang đi qua pipeline realtime.
+- Ý nghĩa từng field và trạng thái trong mục `Realtime Detector Outputs`.
 - Ý nghĩa từng chỉ số đang hiển thị trên màn hình `Raw UBX Stream`.
 - Từng loại `identity` (theo nhóm bản tin UBX) và bản tin nào hệ thống đang dùng trực tiếp.
 
@@ -13,6 +14,12 @@ Phạm vi mô tả bám theo code hiện tại:
 - [thread/ReadSerialThread.py](/home/firefly/double_difference_cp/thread/ReadSerialThread.py)
 - [thread/RTKLIBStage.py](/home/firefly/double_difference_cp/thread/RTKLIBStage.py)
 - [thread/SocketThread.py](/home/firefly/double_difference_cp/thread/SocketThread.py)
+- [realtime/pipeline.py](/home/firefly/double_difference_cp/realtime/pipeline.py)
+- [realtime/types.py](/home/firefly/double_difference_cp/realtime/types.py)
+- [realtime/detector_engines/sos.py](/home/firefly/double_difference_cp/realtime/detector_engines/sos.py)
+- [realtime/detector_engines/d3.py](/home/firefly/double_difference_cp/realtime/detector_engines/d3.py)
+- [realtime/measurement_builders/carrier.py](/home/firefly/double_difference_cp/realtime/measurement_builders/carrier.py)
+- [realtime/measurement_builders/smoothed_pseudorange.py](/home/firefly/double_difference_cp/realtime/measurement_builders/smoothed_pseudorange.py)
 - [templates/index.html](/home/firefly/double_difference_cp/templates/index.html)
 - [models/RAWXData.py](/home/firefly/double_difference_cp/models/RAWXData.py)
 - [models/SatelliteData.py](/home/firefly/double_difference_cp/models/SatelliteData.py)
@@ -130,9 +137,106 @@ Mỗi event trong ingress queue có dạng:
 
 ---
 
-## 4) Các chỉ số hiển thị trên màn hình Raw UBX Stream
+## 4) Realtime Detector Outputs
 
-## 4.1 Khối tổng quan (global)
+Mục `Realtime Detector Outputs` trên dashboard được cập nhật từ event Socket.IO `update_image`.
+Trong payload này, field `realtime_outputs` là một object map theo tên output:
+
+```json
+{
+  "realtime_outputs": {
+    "sos_carrier": { ... },
+    "sos_smoothed_pseudorange": { ... },
+    "d3_carrier": { ... },
+    "d3_smoothed_pseudorange": { ... }
+  }
+}
+```
+
+## 4.1 Các card detector hiện có
+
+- `sos_carrier`: detector SoS chạy trên double-difference carrier phase fractional cycles.
+- `sos_smoothed_pseudorange`: detector SoS chạy trên double-difference carrier-smoothed pseudorange.
+- `d3_carrier`: detector D3 chạy trên double-difference carrier phase fractional cycles.
+- `d3_smoothed_pseudorange`: detector D3 chạy trên double-difference carrier-smoothed pseudorange.
+
+Trong code hiện tại:
+
+- `carrier`: lấy GPS L1 (`gnssId == 0`, `sigId == 0`), tính single difference giữa `rx2 - rx1`, sau đó trừ vệ tinh tham chiếu để ra double difference; giá trị cuối được lấy phần fractional cycle.
+- `smoothed_pseudorange`: lấy GPS L1, làm mượt pseudorange bằng carrier phase theo Hatch filter, rồi tính double difference theo vệ tinh tham chiếu.
+- `reference_svid`: hiện là SVID nhỏ nhất trong danh sách vệ tinh GPS L1 chung giữa hai receiver.
+
+## 4.2 Cấu trúc mỗi detector output
+
+Mỗi object trong `realtime_outputs` có dạng:
+
+```json
+{
+  "tow_s": 123456.0,
+  "score": 0.012345,
+  "threshold": 0.09,
+  "spoofing": false,
+  "reference_svid": 3,
+  "visible_svids": [3, 8, 14, 22],
+  "suspect_svids": [],
+  "measurement_name": "carrier",
+  "detector_name": "sos"
+}
+```
+
+Ý nghĩa từng field:
+
+- `tow_s`: GPS Time Of Week của epoch detect, đơn vị giây.
+- `score`: điểm số detector tính được cho epoch hiện tại.
+- `threshold`: ngưỡng đang dùng để đổi `score` thành trạng thái detect; nếu là `null` thì detector chưa đủ cấu hình để kết luận.
+- `spoofing`: kết luận dạng machine-readable:
+  - `true`: detector kết luận có spoofing.
+  - `false`: detector kết luận bình thường.
+  - `null` hoặc thiếu field: detector chưa kết luận.
+- `reference_svid`: vệ tinh tham chiếu dùng khi tính double difference; `null` nghĩa là không chọn được vệ tinh tham chiếu.
+- `visible_svids`: danh sách SVID GPS L1 xuất hiện đồng thời ở cả `rx1` và `rx2` trong measurement frame, gồm cả vệ tinh tham chiếu.
+- `suspect_svids`: danh sách SVID bị detector xem là nghi vấn; với SoS hiện thường là `[]`, với D3 là các vệ tinh có double-difference gần nhau trong ngưỡng similarity.
+- `measurement_name`: loại measurement đầu vào, hiện là `carrier` hoặc `smoothed_pseudorange`.
+- `detector_name`: tên detector, hiện là `sos` hoặc `d3`.
+
+## 4.3 Ý nghĩa `score` và `threshold`
+
+`SoS`:
+
+- `score`: trung bình bình phương các giá trị double difference trong frame.
+- `threshold`: ngưỡng SoS.
+- Quy tắc hiện tại: `score < threshold` thì `spoofing = true`; `score >= threshold` thì `spoofing = false`.
+- Lý do trong code: theo ghi chú detector hiện tại, SoS thấp biểu thị các vệ tinh có DD ít phân tán bất thường.
+
+`D3`:
+
+- `score`: số lượng SVID nằm trong tập nghi vấn.
+- `threshold`: similarity threshold, tức ngưỡng để coi hai giá trị double difference là đủ gần nhau.
+- `suspect_svids`: gom các cặp SVID có `abs(dd_a - dd_b) <= threshold`.
+- Quy tắc hiện tại: nếu số SVID nghi vấn `>= D3_MIN_CLUSTER_SIZE` thì `spoofing = true`; ngược lại `spoofing = false`.
+
+## 4.4 Ý nghĩa trạng thái trên UI
+
+UI không nhận trực tiếp chuỗi `Normal` / `Detected` từ backend. UI tự map từ field `spoofing`:
+
+- `Detected`: `spoofing === true`; card hiển thị màu đỏ. Nghĩa là detector hiện tại đã vượt điều kiện spoofing.
+- `Normal`: `spoofing === false`; card hiển thị màu xanh. Nghĩa là detector đã có đủ dữ liệu/ngưỡng và chưa thấy spoofing theo rule hiện tại.
+- `Pending`: `spoofing` là `null`, `undefined`, hoặc output chưa có trong payload; card hiển thị màu xám. Nghĩa là detector chưa thể kết luận, thường do thiếu measurement, thiếu vệ tinh chung, hoặc thiếu threshold.
+- `Waiting...` / `No data yet.`: trạng thái khởi tạo trước khi browser nhận `update_image` đầu tiên cho card đó.
+- `N/A`: giá trị render khi một field như `score`, `threshold`, hoặc `reference_svid` là `null`/`undefined`.
+
+## 4.5 Khi nào card không cập nhật?
+
+- `update_image` chỉ emit khi nhánh detect xử lý được `epoch_pair` và đến chu kỳ plot (`PLOT_INTERVAL`).
+- Nếu thiếu `RXM-RAWX` hoặc `NAV-PVT` từ một trong hai receiver, hệ thống không tạo đủ `epoch_pair`.
+- Nếu không có vệ tinh GPS L1 chung giữa hai receiver, measurement builder trả về `None`, output tương ứng không xuất hiện.
+- Nếu threshold cấu hình là `null`, detector vẫn có thể có `score` nhưng `spoofing` là `null`, nên UI hiển thị `Pending`.
+
+---
+
+## 5) Các chỉ số hiển thị trên màn hình Raw UBX Stream
+
+## 5.1 Khối tổng quan (global)
 
 Các field hiển thị ở panel trên cùng:
 
@@ -154,7 +258,7 @@ Lưu ý:
 
 - Trường `last_acked_seq` trong payload `queue_stats` hiện đang map vào `detect_processed` để giữ tương thích UI cũ, không còn nghĩa ACK SQLite.
 
-## 4.2 Khối theo từng receiver (`rx1`, `rx2`)
+## 5.2 Khối theo từng receiver (`rx1`, `rx2`)
 
 - `Total frames`: tổng frame của receiver đó browser đã nhận.
 - `Last seq`: `seq` mới nhất của receiver đó.
@@ -162,7 +266,7 @@ Lưu ý:
 - `Gaps`: số khoảng trống `seq` theo receiver.
 - `Identity counts`: đếm số lần xuất hiện từng `identity`.
 
-## 4.3 Bảng chi tiết từng dòng
+## 5.3 Bảng chi tiết từng dòng
 
 Mỗi dòng một frame:
 
@@ -175,7 +279,7 @@ Mỗi dòng một frame:
 
 ---
 
-## 5) Identity là gì?
+## 6) Identity là gì?
 
 `identity` là tên message sau khi parse từ frame u-blox (qua `pyubx2`), ví dụ:
 
@@ -185,7 +289,7 @@ Mỗi dòng một frame:
 - `MON-SPAN`
 - và nhiều bản tin khác cùng prefix `NAV-*`, `MON-*`, `RXM-*`, `SEC-*`, `TIM-*`...
 
-## 5.1 Nhóm identity hệ thống dùng trực tiếp
+## 6.1 Nhóm identity hệ thống dùng trực tiếp
 
 Các identity có logic xử lý rõ trong code:
 
@@ -203,7 +307,7 @@ Các identity có logic xử lý rõ trong code:
 4. `MON-SPAN`
 - Lưu vào state `spectrum` để vẽ spectrum.
 
-## 5.2 Nhóm identity chỉ pass-through raw stream
+## 6.2 Nhóm identity chỉ pass-through raw stream
 
 Các identity khác (ví dụ nhiều bản tin `NAV-*`, `MON-*`, `SEC-*`, `TIM-*`) hiện:
 
@@ -214,20 +318,26 @@ Các identity khác (ví dụ nhiều bản tin `NAV-*`, `MON-*`, `SEC-*`, `TIM-
 
 ---
 
-## 6) Gợi ý đọc nhanh khi debug
+## 7) Gợi ý đọc nhanh khi debug
 
 1. Xem `Identity counts` để biết luồng bản tin đang phát.
 2. Nếu `Gaps` tăng nhanh:
-- kiểm tra `Ingress/Detect/Raw backlog`,
-- kiểm tra `Detect dropped` hoặc `Raw dropped`.
+   - kiểm tra `Ingress/Detect/Raw backlog`,
+   - kiểm tra `Detect dropped` hoặc `Raw dropped`.
 3. Nếu detect không ra:
-- kiểm tra có đủ `RXM-RAWX` + `NAV-PVT` từ cả `rx1`/`rx2` không,
-- kiểm tra điều kiện đồng bộ `round(rcvTow)` giữa 2 máy.
+   - kiểm tra có đủ `RXM-RAWX` + `NAV-PVT` từ cả `rx1`/`rx2` không,
+   - kiểm tra điều kiện đồng bộ `round(rcvTow)` giữa 2 máy.
+4. Nếu `Realtime Detector Outputs` luôn `Pending`:
+   - kiểm tra output có field `threshold` khác `null` không,
+   - kiểm tra `visible_svids` có đủ vệ tinh GPS L1 chung không,
+   - kiểm tra `reference_svid` có khác `null` không,
+   - kiểm tra `detect_processed` có tăng không.
 
 ---
 
-## 7) Giới hạn hiện tại
+## 8) Giới hạn hiện tại
 
 - Pipeline là RAM-only: mất process là mất queue state.
 - `raw_base64` tăng tải mạng/UI; nếu cần tối ưu, có thể phát raw ở chế độ sampling hoặc nhị phân riêng.
 - `identity` có thể khác theo cấu hình message rate trên thiết bị u-blox.
+- Threshold mặc định hiện có mục đích giúp test runtime không kẹt `Pending`; cần hiệu chuẩn lại bằng dữ liệu sạch trước khi dùng để kết luận vận hành.

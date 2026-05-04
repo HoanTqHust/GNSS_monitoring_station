@@ -235,6 +235,41 @@
             color: #1e293b;
         }
 
+        .summary-chart-section {
+            max-width: 1400px;
+            margin: 0 auto 32px;
+            padding: 0 20px;
+            text-align: left;
+        }
+
+        .summary-chart-card {
+            background-color: white;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .summary-chart-card h3 {
+            margin: 0 0 10px 0;
+            color: #0066cc;
+        }
+
+        .summary-chart-meta {
+            margin-top: 10px;
+            color: #334155;
+            font-size: 0.92rem;
+            line-height: 1.5;
+        }
+
+        .summary-chart-wrap {
+            height: 300px;
+        }
+
+        .summary-chart-wrap canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
     </style>
 </head>
 
@@ -281,6 +316,16 @@
                 <div class="detector-status pending" id="status_d3_smoothed_pseudorange">Waiting...</div>
                 <div class="detector-meta" id="meta_d3_smoothed_pseudorange">No data yet.</div>
             </div>
+        </div>
+    </div>
+
+    <div class="section summary-chart-section">
+        <div class="summary-chart-card">
+            <h3>Summary Chart (Realtime Detector + Raw UBX Stream)</h3>
+            <div class="summary-chart-wrap">
+                <canvas id="summaryChart"></canvas>
+            </div>
+            <div class="summary-chart-meta" id="summaryChartMeta">Waiting for summary data...</div>
         </div>
     </div>
 
@@ -373,6 +418,7 @@
 
     <!-- SocketIO Script -->
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
     <script>
         document.addEventListener("DOMContentLoaded", function () {
             const socket = io("http://192.168.5.2:5000");
@@ -387,7 +433,30 @@
             const rawRowsRx2Node = document.getElementById("rawRowsRx2");
             const rawMetricsRx1Node = document.getElementById("rawMetricsRx1");
             const rawMetricsRx2Node = document.getElementById("rawMetricsRx2");
+            const summaryChartNode = document.getElementById("summaryChart");
+            const summaryChartMetaNode = document.getElementById("summaryChartMeta");
             const RAW_ROWS_LIMIT = 80;
+            const SUMMARY_POINTS_LIMIT = 180;
+            const SUMMARY_UPDATE_INTERVAL_MS = 1000;
+            let summaryChart = null;
+            let lastSummaryUpdateMs = 0;
+            const summaryState = {
+                labels: [],
+                detectedCounts: [],
+                normalCounts: [],
+                pendingCounts: [],
+                rawPendingEvents: [],
+                rawDroppedTotals: [],
+                latestRealtime: {
+                    detected: 0,
+                    normal: 0,
+                    pending: realtimeOutputIds.length,
+                },
+                latestRaw: {
+                    pendingEvents: 0,
+                    droppedTotal: 0,
+                },
+            };
             const rawState = {
                 received: 0,
                 duplicates: 0,
@@ -411,6 +480,184 @@
                     },
                 },
             };
+
+            function toNumberOrZero(value) {
+                const numeric = Number(value);
+                return Number.isFinite(numeric) ? numeric : 0;
+            }
+
+            function initializeSummaryChart() {
+                if (!summaryChartNode || typeof Chart === "undefined") {
+                    if (summaryChartMetaNode) {
+                        summaryChartMetaNode.textContent = "Chart library unavailable.";
+                    }
+                    return;
+                }
+
+                summaryChart = new Chart(summaryChartNode.getContext("2d"), {
+                    type: "line",
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: "Detected Count",
+                                data: [],
+                                borderColor: "#dc2626",
+                                backgroundColor: "rgba(220, 38, 38, 0.15)",
+                                yAxisID: "yDetector",
+                                tension: 0.25,
+                            },
+                            {
+                                label: "Normal Count",
+                                data: [],
+                                borderColor: "#2563eb",
+                                backgroundColor: "rgba(37, 99, 235, 0.15)",
+                                yAxisID: "yDetector",
+                                tension: 0.25,
+                            },
+                            {
+                                label: "Pending Count",
+                                data: [],
+                                borderColor: "#64748b",
+                                backgroundColor: "rgba(100, 116, 139, 0.15)",
+                                yAxisID: "yDetector",
+                                tension: 0.25,
+                            },
+                            {
+                                label: "Raw Queue Pending",
+                                data: [],
+                                borderColor: "#f59e0b",
+                                backgroundColor: "rgba(245, 158, 11, 0.15)",
+                                yAxisID: "yRaw",
+                                tension: 0.25,
+                            },
+                            {
+                                label: "Raw Total Dropped",
+                                data: [],
+                                borderColor: "#0f766e",
+                                backgroundColor: "rgba(15, 118, 110, 0.15)",
+                                yAxisID: "yRaw",
+                                tension: 0.25,
+                            },
+                        ],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: false,
+                        interaction: {
+                            mode: "index",
+                            intersect: false,
+                        },
+                        scales: {
+                            yDetector: {
+                                type: "linear",
+                                position: "left",
+                                min: 0,
+                                max: realtimeOutputIds.length,
+                                ticks: {
+                                    stepSize: 1,
+                                },
+                                title: {
+                                    display: true,
+                                    text: "Realtime Detector Count",
+                                },
+                            },
+                            yRaw: {
+                                type: "linear",
+                                position: "right",
+                                min: 0,
+                                title: {
+                                    display: true,
+                                    text: "Raw Queue Metrics",
+                                },
+                                grid: {
+                                    drawOnChartArea: false,
+                                },
+                            },
+                            x: {
+                                title: {
+                                    display: true,
+                                    text: "Time",
+                                },
+                            },
+                        },
+                        plugins: {
+                            legend: {
+                                position: "top",
+                            },
+                        },
+                    },
+                });
+            }
+
+            function renderSummaryMeta() {
+                if (!summaryChartMetaNode) {
+                    return;
+                }
+                summaryChartMetaNode.innerHTML =
+                    "Realtime: Detected <strong>" + summaryState.latestRealtime.detected + "</strong>, " +
+                    "Normal <strong>" + summaryState.latestRealtime.normal + "</strong>, " +
+                    "Pending <strong>" + summaryState.latestRealtime.pending + "</strong> | " +
+                    "Raw queue pending <strong>" + summaryState.latestRaw.pendingEvents + "</strong>, " +
+                    "Raw dropped total <strong>" + summaryState.latestRaw.droppedTotal + "</strong>";
+            }
+
+            function pushSummaryPoint() {
+                const label = new Date().toLocaleTimeString("en-GB", { hour12: false });
+                summaryState.labels.push(label);
+                summaryState.detectedCounts.push(summaryState.latestRealtime.detected);
+                summaryState.normalCounts.push(summaryState.latestRealtime.normal);
+                summaryState.pendingCounts.push(summaryState.latestRealtime.pending);
+                summaryState.rawPendingEvents.push(summaryState.latestRaw.pendingEvents);
+                summaryState.rawDroppedTotals.push(summaryState.latestRaw.droppedTotal);
+
+                if (summaryState.labels.length > SUMMARY_POINTS_LIMIT) {
+                    summaryState.labels.shift();
+                    summaryState.detectedCounts.shift();
+                    summaryState.normalCounts.shift();
+                    summaryState.pendingCounts.shift();
+                    summaryState.rawPendingEvents.shift();
+                    summaryState.rawDroppedTotals.shift();
+                }
+
+                if (summaryChart) {
+                    summaryChart.data.labels = summaryState.labels;
+                    summaryChart.data.datasets[0].data = summaryState.detectedCounts;
+                    summaryChart.data.datasets[1].data = summaryState.normalCounts;
+                    summaryChart.data.datasets[2].data = summaryState.pendingCounts;
+                    summaryChart.data.datasets[3].data = summaryState.rawPendingEvents;
+                    summaryChart.data.datasets[4].data = summaryState.rawDroppedTotals;
+                    summaryChart.update("none");
+                }
+                renderSummaryMeta();
+            }
+
+            function updateSummaryChart(force) {
+                const nowMs = Date.now();
+                if (!force && nowMs - lastSummaryUpdateMs < SUMMARY_UPDATE_INTERVAL_MS) {
+                    return;
+                }
+                lastSummaryUpdateMs = nowMs;
+                pushSummaryPoint();
+            }
+
+            function countRealtimeStatuses(realtimeOutputs) {
+                let detected = 0;
+                let normal = 0;
+                let pending = 0;
+                realtimeOutputIds.forEach((outputName) => {
+                    const outputData = realtimeOutputs ? realtimeOutputs[outputName] : null;
+                    if (outputData && outputData.spoofing === true) {
+                        detected += 1;
+                    } else if (outputData && outputData.spoofing === false) {
+                        normal += 1;
+                    } else {
+                        pending += 1;
+                    }
+                });
+                return { detected, normal, pending };
+            }
 
             function formatNumber(value) {
                 if (value === null || value === undefined) {
@@ -583,6 +830,8 @@
                     realtimeOutputIds.forEach((outputName) => {
                         updateRealtimeCard(outputName, data.realtime_outputs[outputName]);
                     });
+                    summaryState.latestRealtime = countRealtimeStatuses(data.realtime_outputs);
+                    updateSummaryChart(false);
                 }
             });
 
@@ -623,7 +872,16 @@
                     }
                 });
                 renderRawMetrics(payload?.queue_stats || {});
+                summaryState.latestRaw.pendingEvents = toNumberOrZero(payload?.queue_stats?.pending_events);
+                summaryState.latestRaw.droppedTotal =
+                    toNumberOrZero(payload?.queue_stats?.detect_dropped) +
+                    toNumberOrZero(payload?.queue_stats?.raw_dropped);
+                updateSummaryChart(false);
             });
+
+            initializeSummaryChart();
+            renderSummaryMeta();
+            updateSummaryChart(true);
         });
     </script>
 </body>

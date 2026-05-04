@@ -23,7 +23,7 @@
 - `templates/`: HTML frontend templates
 - `docs/`: project memory and repository documentation
 - `record_ubx.sh`, `log.py`, `send_command.py`, `test.py`: operational and debugging scripts
-- `README_RAW_UBX_STREAM_VI.md`: Vietnamese field-by-field reference for raw stream payload/UI metrics/identity groups
+- `README_RAW_UBX_STREAM_VI.md`: Vietnamese field-by-field reference for realtime detector outputs, raw stream payloads, UI metrics, status meanings, and identity groups
 
 ## Module Map
 
@@ -68,6 +68,7 @@
 - If changing the dashboard payload:
   - edit `thread/SocketThread.py` and `templates/index.html`
   - keep payload keys aligned between server and client
+  - keep summary chart series mapping aligned with `realtime_outputs` and `raw_data_batch.queue_stats`
 - If changing queue reliability behavior:
   - edit queue sizing / poll configs in `config.py`
   - edit overflow routing policy in `thread/SocketThread.py`

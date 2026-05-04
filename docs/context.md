@@ -169,6 +169,30 @@ This repository implements a real-time GNSS monitoring system focused on compari
   - `D3_MIN_CLUSTER_SIZE=3`
 - `realtime/pipeline.py` now injects these values into SoS/D3 detector engines at construction time.
 
+## Frontend Summary Chart (2026-05-04)
+
+- Added one combined chart block in `templates/index.html` to summarize two existing text sections:
+  - `Realtime Detector Outputs`
+  - `Raw UBX Stream`
+- Existing text metrics/cards remain unchanged for detailed inspection.
+- Chart implementation details:
+  - uses Chart.js line chart with dual Y-axes
+  - realtime series: `Detected Count`, `Normal Count`, `Pending Count`
+  - raw stream series: `Raw Queue Pending`, `Raw Total Dropped`
+  - update throttle at `1s` to avoid UI overload under high-rate stream
+
+## Vietnamese Realtime/Raw Stream README (2026-05-04)
+
+- `README_RAW_UBX_STREAM_VI.md` now documents both dashboard data surfaces:
+  - `Realtime Detector Outputs`
+  - `Raw UBX Stream`
+- The realtime detector section describes:
+  - `realtime_outputs` map keys (`sos_carrier`, `sos_smoothed_pseudorange`, `d3_carrier`, `d3_smoothed_pseudorange`)
+  - each detector output field (`tow_s`, `score`, `threshold`, `spoofing`, `reference_svid`, `visible_svids`, `suspect_svids`, `measurement_name`, `detector_name`)
+  - frontend status mapping (`Detected`, `Normal`, `Pending`, `Waiting...`, `N/A`)
+  - current SoS/D3 score and threshold rules
+- This is a documentation-only update; no runtime schema or frontend behavior changed.
+
 ## Documentation Intent
 
 The `docs/` directory exists to:
