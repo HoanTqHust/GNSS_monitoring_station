@@ -193,6 +193,24 @@ This repository implements a real-time GNSS monitoring system focused on compari
   - current SoS/D3 score and threshold rules
 - This is a documentation-only update; no runtime schema or frontend behavior changed.
 
+## D3 Score Zero Finding (2026-05-04)
+
+- Current D3 runtime defaults are `D3_CARRIER_SIMILARITY_THRESHOLD=0.0` and `D3_SMOOTHED_PSEUDORANGE_SIMILARITY_THRESHOLD=0.0` unless env overrides are set.
+- D3 computes `score` as `len(suspect_svids)`.
+- `suspect_svids` is populated only when a pair of DD values satisfies `abs(dd_a - dd_b) <= similarity_threshold`.
+- With a threshold of `0.0`, D3 only counts exactly equal floating-point DD values, so `suspect_svids` can remain empty and `score` stays `0.0` even when many SVIDs are visible.
+- Observed output evidence in `output_rt/d3_*/events.jsonl`: `threshold: 0.0`, `suspect_svids: []`, `score: 0.0`.
+
+## Branch Delta Documentation (2026-05-05)
+
+- Added `docs/dev-hoantran-vs-main.md` as the Vietnamese branch-change ledger for `dev/hoantran` compared with `main`.
+- Current recorded comparison scope:
+  - merge-base/main: `3595525c4def`
+  - `dev/hoantran` head: `72de3b243177`
+  - 8 commits from `main..dev/hoantran`
+- The file is intended to be updated whenever `dev/hoantran` receives a new commit.
+- It records each commit's feature-level changes, important files/functions to read, historical superseded code, validation references, and current risks such as sensitive files and RAM-only queue behavior.
+
 ## Documentation Intent
 
 The `docs/` directory exists to:

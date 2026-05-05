@@ -22,6 +22,7 @@
 - `logs/`: raw UBX logging helper
 - `templates/`: HTML frontend templates
 - `docs/`: project memory and repository documentation
+- `docs/dev-hoantran-vs-main.md`: Vietnamese per-commit ledger of `dev/hoantran` changes compared with `main`
 - `record_ubx.sh`, `log.py`, `send_command.py`, `test.py`: operational and debugging scripts
 - `README_RAW_UBX_STREAM_VI.md`: Vietnamese field-by-field reference for realtime detector outputs, raw stream payloads, UI metrics, status meanings, and identity groups
 
