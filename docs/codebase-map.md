@@ -25,6 +25,7 @@
 - `docs/dev-hoantran-vs-main.md`: Vietnamese per-commit ledger of `dev/hoantran` changes compared with `main`
 - `record_ubx.sh`, `log.py`, `send_command.py`, `test.py`: operational and debugging scripts
 - `README_RAW_UBX_STREAM_VI.md`: Vietnamese field-by-field reference for realtime detector outputs, raw stream payloads, UI metrics, status meanings, and identity groups
+- `README_MQTT_DATA_SCHEMA_VI.md`: Vietnamese MQTT topic and JSON schema contract for external server subscribers
 
 ## Module Map
 
@@ -55,6 +56,7 @@
 - External integrations:
   - Serial ports under `/dev/ttyACM*`
   - Socket.IO CDN loaded from `templates/index.html`
+  - Planned MQTT broker publishing for external server consumption, with separate raw, detect, and health topic families
 - Background work:
   - `multiprocessing.Process` for serial ingestion
   - `socketio.start_background_task()` for the streaming worker
@@ -83,6 +85,10 @@
   - start with `realtime/pipeline.py`
   - add logic in `realtime/measurement_builders/` before editing detector engines
   - keep realtime detectors decoupled from serial I/O and web transport
+- If adding MQTT publishing:
+  - add a transport adapter after RAM routing/consumer output boundaries, not inside detector engines
+  - keep raw UBX/SDR payloads on raw topics and publish detector summaries on detect topics
+  - version every published schema and include sequence numbers for duplicate/gap detection
 - If debugging receiver configuration:
   - inspect `send_command.py`, `test.py`, `record_ubx.sh`, and `log.py`
 

@@ -211,6 +211,19 @@ This repository implements a real-time GNSS monitoring system focused on compari
 - The file is intended to be updated whenever `dev/hoantran` receives a new commit.
 - It records each commit's feature-level changes, important files/functions to read, historical superseded code, validation references, and current risks such as sensitive files and RAM-only queue behavior.
 
+## MQTT Telemetry Architecture Note (2026-05-05)
+
+- Planned MQTT output should preserve the current internal split between raw transport data and derived detector data:
+  - `raw.ubx_frame.v1` for each parsed u-blox frame, with raw bytes carried as base64 and receiver/message identity metadata.
+  - `raw.sdr_frame.v1` later for SDR frontend snapshots or sample metadata, using the same event envelope.
+  - `detect.epoch_result.v1` for one synchronized epoch result, carrying position quality, signal summaries, and detector outputs.
+  - `device.health.v1` for queue/backpressure/runtime health independent of GNSS measurement content.
+- All MQTT messages should use one stable event envelope with explicit schema version, event id, source, event time, device id, frontend type, sequence number, and payload type.
+- Heavy raw payloads must not be mixed into lightweight detect messages. Subscribers that only need spoofing status should subscribe to detect topics without receiving raw UBX/SDR bytes.
+- The existing single flat sample shape with `lat`, `lon`, `sat_count`, `avg_cno`, `pdop`, `is_spoofed`, and `signals_data` is suitable only as a dashboard summary, not as the canonical broker schema.
+- Added `README_MQTT_DATA_SCHEMA_VI.md` as the Vietnamese MQTT contract document with diacritics for external server subscribers.
+- MQTT schema now requires QoS 1 for every topic family; subscribers must still deduplicate by `event_id` and track `seq` gaps because QoS 1 is at-least-once delivery and does not protect data lost before publish.
+
 ## Documentation Intent
 
 The `docs/` directory exists to:
