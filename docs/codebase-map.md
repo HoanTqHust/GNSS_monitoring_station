@@ -17,6 +17,7 @@
 - `config.py`: environment loading and runtime settings
 - `models/`: data wrappers for parsed RAWX messages
 - `realtime/`: realtime measurement-builder and detector-engine skeleton for live spoofing outputs
+- `telemetry/`: MQTT schema builders and publisher adapter for external server consumption
 - `thread/`: serial ingestion worker and Socket.IO streaming worker
 - `draws/`: plotting and detection logic
 - `logs/`: raw UBX logging helper
@@ -34,6 +35,7 @@
 | Web runtime | Builds the Flask app, routes, and startup flow | `app.py`, `templates/index.html`, `templates/about.html` | changing routes, startup behavior, or dashboard rendering | `flask`, `flask_socketio`, `thread/*`, `config.py` | web users, background workers |
 | Serial ingestion | Reads UBX messages from two receivers, runs RTKLIB-stage normalization, and emits events into RAM ingress queue | `thread/ReadSerialThread.py`, `thread/RTKLIBStage.py` | changing serial ports, message types, normalization shape, or event payload mapping | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py`, `multiprocessing.Queue` | `app.py`, `thread/SocketThread.py` |
 | Realtime detector skeleton | Converts normalized epochs into measurement frames and writes separated detector outputs | `realtime/pipeline.py`, `realtime/measurement_builders/*`, `realtime/detector_engines/*`, `realtime/output_writer.py` | adding live SoS/D3 flow, changing output format, preparing MQTT/REST integration | `models`-compatible RAWX objects, `numpy`, filesystem output | future live detector workers or publishers |
+| MQTT telemetry | Builds MQTT JSON envelopes and publishes them to Mosquitto-compatible brokers with QoS 1 | `telemetry/mqtt_schema.py`, `telemetry/mqtt_publisher.py`, `.env.example` | changing broker schema, topic mapping, QoS/publish behavior, or MQTT config defaults | `paho-mqtt`, `config.py` | `thread/SocketThread.py`, external server subscribers |
 | Standalone live runner | Reads live UBX streams and feeds synchronized epochs into the realtime pipeline | `realtime/live_runner.py` | running the detector stack without touching the web app runtime | `serial`, `pyubx2`, `config.py`, `models/RAWXData.py`, `realtime/pipeline.py` | operators, live smoke tests |
 | Threshold calibration | Reads clean recorded UBX files, synchronizes epochs, and estimates four initial thresholds for the current realtime stack | `realtime/calibrate_thresholds.py` | deriving initial SoS/D3 thresholds from clean baseline data | `pyubx2`, `models/RAWXData.py`, `realtime/measurement_builders/*`, `numpy` | operators, future config wiring |
 | Visualization + detection | Computes carrier phase differences, creates skyplot/spectrum/DPS images, flags spoofing | `draws/UbloxChart.py` | changing the algorithm, plotting, or thresholds | `numpy`, `matplotlib`, `sklearn`, `config.py` | `thread/SocketThread.py` |
@@ -53,6 +55,9 @@
   - RAM ingress queue -> `SocketThread.router_thread()` -> detect queue + raw queue
   - Detect queue -> `SocketThread.detect_consumer_thread()` -> detector + `UbloxChart` -> `update_image`
   - Raw queue -> `SocketThread.raw_consumer_thread()` -> `raw_data_batch`
+  - Raw queue -> MQTT `raw/ublox/v1`
+  - Detect queue -> MQTT `detect/epoch/v1` + `state/position/v1`
+  - Raw batch metrics -> MQTT `health/v1`
 - External integrations:
   - Serial ports under `/dev/ttyACM*`
   - Socket.IO CDN loaded from `templates/index.html`
@@ -86,7 +91,9 @@
   - add logic in `realtime/measurement_builders/` before editing detector engines
   - keep realtime detectors decoupled from serial I/O and web transport
 - If adding MQTT publishing:
-  - add a transport adapter after RAM routing/consumer output boundaries, not inside detector engines
+  - edit `telemetry/mqtt_schema.py` for payload shape and topic mapping
+  - edit `telemetry/mqtt_publisher.py` for broker publish behavior
+  - keep the transport adapter after RAM routing/consumer output boundaries, not inside detector engines
   - keep raw UBX/SDR payloads on raw topics and publish detector summaries on detect topics
   - version every published schema and include sequence numbers for duplicate/gap detection
 - If debugging receiver configuration:

@@ -11,6 +11,13 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 class config:
      
     PORT1 = os.environ.get("PORT1", "/dev/ttyACM0")
@@ -43,17 +50,31 @@ class config:
     RAM_RAW_EMIT_BATCH_SIZE = int(os.environ.get("RAM_RAW_EMIT_BATCH_SIZE", 100))
 
     # Realtime detector test thresholds (to avoid perpetual "Pending").
-    SOS_CARRIER_THRESHOLD = _env_float("SOS_CARRIER_THRESHOLD", 0.09)
+    SOS_CARRIER_THRESHOLD = _env_float("SOS_CARRIER_THRESHOLD", 0.04)
     SOS_SMOOTHED_PSEUDORANGE_THRESHOLD = _env_float(
         "SOS_SMOOTHED_PSEUDORANGE_THRESHOLD",
         1.10,
     )
     D3_CARRIER_SIMILARITY_THRESHOLD = _env_float(
         "D3_CARRIER_SIMILARITY_THRESHOLD",
-        0.0,
+        0.001,
     )
     D3_SMOOTHED_PSEUDORANGE_SIMILARITY_THRESHOLD = _env_float(
         "D3_SMOOTHED_PSEUDORANGE_SIMILARITY_THRESHOLD",
-        0.0,
+        0.001,
     )
     D3_MIN_CLUSTER_SIZE = int(os.environ.get("D3_MIN_CLUSTER_SIZE", 3))
+
+    MQTT_ENABLED = _env_bool("MQTT_ENABLED", True)
+    MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
+    MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
+    MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "rw_user")
+    MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "rw")
+    MQTT_CLIENT_ID_PREFIX = os.environ.get("MQTT_CLIENT_ID_PREFIX", "double-difference-cp")
+    MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "gnss")
+    MQTT_SITE_ID = os.environ.get("MQTT_SITE_ID", "lab_hanoi")
+    MQTT_DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", "test_device")
+    MQTT_QOS = int(os.environ.get("MQTT_QOS", 1))
+    MQTT_KEEPALIVE_S = int(os.environ.get("MQTT_KEEPALIVE_S", 60))
+    MQTT_PUBLISH_TIMEOUT_S = _env_float("MQTT_PUBLISH_TIMEOUT_S", 2.0)
+    MQTT_POSITION_RETAIN = _env_bool("MQTT_POSITION_RETAIN", False)

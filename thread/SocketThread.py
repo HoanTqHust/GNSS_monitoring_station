@@ -12,6 +12,13 @@ from config import config
 from draws.UbloxChart import UbloxChart
 from realtime.pipeline import RealtimeSpoofingPipeline
 from realtime.types import RealtimeEpochPair
+from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
+from telemetry.mqtt_schema import (
+    build_detect_epoch_message,
+    build_health_message,
+    build_position_state_message,
+    build_raw_ublox_message,
+)
 
 LOGGER = logging.getLogger("thread.socket_thread")
 
@@ -56,8 +63,107 @@ class SocketThread:
             "raw_emitted": 0,
             "unknown_events": 0,
             "last_seq": 0,
+            "mqtt_raw_published": 0,
+            "mqtt_raw_failed": 0,
+            "mqtt_detect_published": 0,
+            "mqtt_detect_failed": 0,
+            "mqtt_position_published": 0,
+            "mqtt_position_failed": 0,
+            "mqtt_health_published": 0,
+            "mqtt_health_failed": 0,
         }
         return metrics, threading.Lock()
+
+    @staticmethod
+    def create_mqtt_publisher(component: str) -> MqttTelemetryPublisher:
+        return MqttTelemetryPublisher(MqttPublishSettings.from_config(config, component))
+
+    @staticmethod
+    def _increment_metric(metrics: dict[str, int], lock: threading.Lock, key: str, amount: int = 1) -> None:
+        with lock:
+            metrics[key] += amount
+
+    @staticmethod
+    def _publish_raw_ublox(
+        mqtt_publisher: MqttTelemetryPublisher,
+        event: dict[str, Any],
+        metrics: dict[str, int],
+        lock: threading.Lock,
+    ) -> None:
+        try:
+            topic, message = build_raw_ublox_message(
+                event,
+                topic_prefix=config.MQTT_TOPIC_PREFIX,
+                site_id=config.MQTT_SITE_ID,
+                device_id=config.MQTT_DEVICE_ID,
+            )
+            if mqtt_publisher.publish(topic, message):
+                SocketThread._increment_metric(metrics, lock, "mqtt_raw_published")
+            else:
+                SocketThread._increment_metric(metrics, lock, "mqtt_raw_failed")
+        except Exception:
+            SocketThread._increment_metric(metrics, lock, "mqtt_raw_failed")
+            LOGGER.exception("mqtt_raw_publish_error seq=%s", event.get("seq"))
+
+    @staticmethod
+    def _publish_detect_epoch(
+        mqtt_publisher: MqttTelemetryPublisher,
+        event: dict[str, Any],
+        realtime_outputs: dict[str, dict[str, Any]],
+        metrics: dict[str, int],
+        lock: threading.Lock,
+    ) -> None:
+        try:
+            topic, message = build_detect_epoch_message(
+                event,
+                realtime_outputs,
+                topic_prefix=config.MQTT_TOPIC_PREFIX,
+                site_id=config.MQTT_SITE_ID,
+                device_id=config.MQTT_DEVICE_ID,
+            )
+            if mqtt_publisher.publish(topic, message):
+                SocketThread._increment_metric(metrics, lock, "mqtt_detect_published")
+            else:
+                SocketThread._increment_metric(metrics, lock, "mqtt_detect_failed")
+
+            position_topic, position_message = build_position_state_message(
+                message,
+                topic_prefix=config.MQTT_TOPIC_PREFIX,
+            )
+            if mqtt_publisher.publish(
+                position_topic,
+                position_message,
+                retain=config.MQTT_POSITION_RETAIN,
+            ):
+                SocketThread._increment_metric(metrics, lock, "mqtt_position_published")
+            else:
+                SocketThread._increment_metric(metrics, lock, "mqtt_position_failed")
+        except Exception:
+            SocketThread._increment_metric(metrics, lock, "mqtt_detect_failed")
+            LOGGER.exception("mqtt_detect_publish_error seq=%s", event.get("seq"))
+
+    @staticmethod
+    def _publish_health(
+        mqtt_publisher: MqttTelemetryPublisher,
+        stats: dict[str, int],
+        metrics: dict[str, int],
+        lock: threading.Lock,
+    ) -> None:
+        try:
+            topic, message = build_health_message(
+                stats,
+                topic_prefix=config.MQTT_TOPIC_PREFIX,
+                site_id=config.MQTT_SITE_ID,
+                device_id=config.MQTT_DEVICE_ID,
+                seq=max(1, int(stats.get("last_seq", 0))),
+            )
+            if mqtt_publisher.publish(topic, message):
+                SocketThread._increment_metric(metrics, lock, "mqtt_health_published")
+            else:
+                SocketThread._increment_metric(metrics, lock, "mqtt_health_failed")
+        except Exception:
+            SocketThread._increment_metric(metrics, lock, "mqtt_health_failed")
+            LOGGER.exception("mqtt_health_publish_error")
 
     @staticmethod
     def _safe_qsize(the_queue) -> int:
@@ -162,6 +268,7 @@ class SocketThread:
     @staticmethod
     def detect_consumer_thread(detect_queue, socketio, metrics: dict[str, int], lock: threading.Lock) -> None:
         realtime_pipeline = RealtimeSpoofingPipeline()
+        mqtt_publisher = SocketThread.create_mqtt_publisher("detect")
         combined_samples: list[Any] = []
         last_plot_time = time.time()
         LOGGER.info("detect_consumer_started")
@@ -187,6 +294,13 @@ class SocketThread:
                     payload,
                     combined_samples,
                     realtime_pipeline,
+                )
+                SocketThread._publish_detect_epoch(
+                    mqtt_publisher,
+                    event,
+                    realtime_outputs,
+                    metrics,
+                    lock,
                 )
                 with lock:
                     metrics["detect_processed"] += 1
@@ -253,6 +367,14 @@ class SocketThread:
             "raw_dropped": snapshot["raw_dropped"],
             "raw_emitted": snapshot["raw_emitted"],
             "unknown_events": snapshot["unknown_events"],
+            "mqtt_raw_published": snapshot["mqtt_raw_published"],
+            "mqtt_raw_failed": snapshot["mqtt_raw_failed"],
+            "mqtt_detect_published": snapshot["mqtt_detect_published"],
+            "mqtt_detect_failed": snapshot["mqtt_detect_failed"],
+            "mqtt_position_published": snapshot["mqtt_position_published"],
+            "mqtt_position_failed": snapshot["mqtt_position_failed"],
+            "mqtt_health_published": snapshot["mqtt_health_published"],
+            "mqtt_health_failed": snapshot["mqtt_health_failed"],
         }
 
     @staticmethod
@@ -265,6 +387,7 @@ class SocketThread:
         lock: threading.Lock,
     ) -> None:
         LOGGER.info("raw_consumer_started")
+        mqtt_publisher = SocketThread.create_mqtt_publisher("raw")
         frames_to_emit: list[dict[str, Any]] = []
         last_emit_time = time.time()
 
@@ -272,6 +395,7 @@ class SocketThread:
             try:
                 event = raw_queue.get(timeout=config.RAM_QUEUE_POLL_INTERVAL)
                 seq = int(event.get("seq", 0))
+                SocketThread._publish_raw_ublox(mqtt_publisher, event, metrics, lock)
                 frames_to_emit.append(
                     {
                         "seq": seq,
@@ -313,6 +437,14 @@ class SocketThread:
                 )
                 with lock:
                     metrics["raw_emitted"] += len(frames_to_emit)
+                health_stats = SocketThread._build_queue_stats(
+                    ingress_queue,
+                    detect_queue,
+                    raw_queue,
+                    metrics,
+                    lock,
+                )
+                SocketThread._publish_health(mqtt_publisher, health_stats, metrics, lock)
                 frames_to_emit = []
                 last_emit_time = now
             except Exception:

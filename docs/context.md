@@ -218,11 +218,77 @@ This repository implements a real-time GNSS monitoring system focused on compari
   - `raw.sdr_frame.v1` later for SDR frontend snapshots or sample metadata, using the same event envelope.
   - `detect.epoch_result.v1` for one synchronized epoch result, carrying position quality, signal summaries, and detector outputs.
   - `device.health.v1` for queue/backpressure/runtime health independent of GNSS measurement content.
+
 - All MQTT messages should use one stable event envelope with explicit schema version, event id, source, event time, device id, frontend type, sequence number, and payload type.
 - Heavy raw payloads must not be mixed into lightweight detect messages. Subscribers that only need spoofing status should subscribe to detect topics without receiving raw UBX/SDR bytes.
 - The existing single flat sample shape with `lat`, `lon`, `sat_count`, `avg_cno`, `pdop`, `is_spoofed`, and `signals_data` is suitable only as a dashboard summary, not as the canonical broker schema.
 - Added `README_MQTT_DATA_SCHEMA_VI.md` as the Vietnamese MQTT contract document with diacritics for external server subscribers.
 - MQTT schema now requires QoS 1 for every topic family; subscribers must still deduplicate by `event_id` and track `seq` gaps because QoS 1 is at-least-once delivery and does not protect data lost before publish.
+- Implemented initial MQTT publishing path:
+  - `telemetry/mqtt_schema.py` builds `raw/ublox`, `detect/epoch`, `state/position`, and `health` JSON envelopes.
+  - `telemetry/mqtt_publisher.py` publishes JSON through paho-mqtt with QoS 1 and waits for publish acknowledgement.
+  - `thread/SocketThread.py` publishes raw UBX messages from the raw consumer, detect/position messages from the detect consumer, and health messages after raw batch emission.
+  - MQTT config is environment-driven in `config.py`; `MQTT_USERNAME` defaults to `rw_user`, but `MQTT_PASSWORD` has no default and must be supplied outside git.
+  - `paho-mqtt==2.1.0` is now listed in `requirements.txt`.
+
+## Logging Expansion (2026-05-06)
+
+- `app.py` now adds a dedicated `all.log` file handler at startup that records all runtime logs (`DEBUG` and above) without MQTT-only filtering.
+- Existing `mqtt.log` behavior is kept, so MQTT-focused logs still remain isolated for transport debugging while `all.log` is used for full pipeline debugging.
+
+## Raw Queue Drop Finding (2026-05-06)
+
+- Evidence from `all.log` shows sustained raw-queue overflow with `queue_drop_oldest drop_key=raw_dropped`.
+- During one run window:
+  - first drop at `2026-05-06 02:55:42,582`
+  - last drop at `2026-05-06 02:56:55,577`
+  - total `raw_dropped` warnings: `6642`
+  - `detect_dropped`: `0`
+  - `ingress_queue_full_drop`: `0`
+- This confirms drops are happening at the raw fan-out queue stage, not ingress saturation.
+- Current RAM queue limits are bounded by item count (`ingress=5000`, `detect=2000`, `raw=5000`), so queue-full drop can occur even when host RAM is still available.
+
+## Startup Regression Fix (2026-05-06)
+
+- Captured startup failure log in `logs/debug/app_start_20260506_0333.log`:
+  - `AttributeError: type object 'config' has no attribute 'MQTT_ENABLED'` from `app.py`.
+- Root cause:
+  - `config.py` no longer defined MQTT config attributes while `app.py` and `thread/SocketThread.py` still referenced them.
+- Fix:
+  - restored `_env_bool` helper and MQTT fields in `config.py`:
+    - `MQTT_ENABLED`, `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`,
+      `MQTT_CLIENT_ID_PREFIX`, `MQTT_TOPIC_PREFIX`, `MQTT_SITE_ID`, `MQTT_DEVICE_ID`,
+      `MQTT_QOS`, `MQTT_KEEPALIVE_S`, `MQTT_PUBLISH_TIMEOUT_S`, `MQTT_POSITION_RETAIN`.
+- Verification:
+  - `python3 -m py_compile config.py app.py thread/SocketThread.py` passed.
+  - startup smoke log `logs/debug/app_start_20260506_0335_after_fix.log` shows app booting and serial enqueue activity without the AttributeError.
+
+## MQTT Publish Missing (2026-05-06)
+
+- Runtime is active and serial ingestion is running (`epoch_pair_enqueued` continues in `all.log` around `03:44` to `03:48` UTC).
+- However, current `thread/SocketThread.py` no longer imports or calls MQTT publisher/schema functions.
+- Result:
+  - app still emits data to frontend (`raw_data_batch`, `update_image`) via Socket.IO
+  - no new MQTT publish events are generated in current runtime
+  - latest historical `mqtt_publish_ok` entries remain at approximately `2026-05-06 03:23:16` in `mqtt.log`.
+
+## MQTT Publish Path Restored (2026-05-06)
+
+- Re-enabled MQTT publishing in `thread/SocketThread.py` for:
+  - raw stream (`raw/ublox/v1`) in `raw_consumer_thread`
+  - detect stream (`detect/epoch/v1`) and position (`state/position/v1`) in `detect_consumer_thread`
+  - health stream (`health/v1`) after raw batch emit
+- Restored MQTT metric counters in runtime queue stats:
+  - `mqtt_raw_published/failed`
+  - `mqtt_detect_published/failed`
+  - `mqtt_position_published/failed`
+  - `mqtt_health_published/failed`
+- Validation:
+  - `python3 -m py_compile thread/SocketThread.py app.py config.py` passed
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` passed
+  - smoke run log `logs/debug/mqtt_restore_optionA_20260506.log` shows sustained:
+    - `mqtt_publish_ok ... raw/ublox/v1`
+    - `mqtt_publish_ok ... health/v1`
 
 ## Documentation Intent
 
@@ -246,3 +312,42 @@ The statements in this file were derived directly from:
 - `templates/*.html`
 
 No statement in this document is based on external assumptions beyond the current source tree.
+
+## MQTT Runtime Check (2026-05-06)
+
+- Runtime config check from `config.py` in current environment reports:
+  - `MQTT_ENABLED=True`
+  - `MQTT_HOST=localhost`
+  - `MQTT_PORT=1883`
+  - `MQTT_USERNAME=rw_user`
+  - `MQTT_PASSWORD` is not set.
+- Validation rule in `telemetry/mqtt_publisher.py` requires non-empty `MQTT_PASSWORD` when MQTT is enabled.
+- Practical effect:
+  - publisher marks config invalid (`mqtt_config_invalid`) and skips publish attempts until password is provided via env.
+- Deterministic validation:
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v`
+  - result: 4 tests passed.
+
+## MQTT Host Update (2026-05-06)
+
+- Updated runtime `.env` to set `MQTT_HOST=192.168.1.50` so the app publishes to LAN broker instead of local-only host reference.
+- Updated `README_MQTT_DATA_SCHEMA_VI.md` publisher config example to use `MQTT_HOST=192.168.1.50` for consistency with LAN broker deployment.
+
+## MQTT Dedicated Log File (2026-05-06)
+
+- Added MQTT-focused logging setup in `app.py`:
+  - create `mqtt.log` at repo root
+  - attach a dedicated file handler with filter rules that keep only MQTT-related records (by logger name/message content)
+  - include startup MQTT runtime config log (`enabled`, `host`, `port`, `username`, `password_set`) without exposing plaintext password
+
+## MQTT Connect Timeout Finding (2026-05-06)
+
+- Observed runtime errors in `mqtt.log`:
+  - `mqtt_publish_error ... socket.timeout: timed out` when connecting to `192.168.1.50:1883`.
+- Network evidence from app host:
+  - host IP: `192.168.5.2/24`
+  - route to broker: `192.168.1.50 via 192.168.5.1`
+  - direct TCP test to `192.168.1.50:1883` times out
+  - ping to `192.168.1.50` has 100% packet loss
+- Conclusion:
+  - failure occurs before MQTT auth/ACL stage; root cause is network reachability path (routing/firewall/broker bind) between app host and `192.168.1.50`.

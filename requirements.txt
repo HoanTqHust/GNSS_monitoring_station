@@ -131,6 +131,7 @@ onnxmltools==1.14.0
 onnxruntime==1.22.0
 optuna==4.4.0
 packaging==24.2
+paho-mqtt==2.1.0
 pandas==2.3.0
 parso==0.8.4
 peft==0.15.2
