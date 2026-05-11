@@ -14,6 +14,7 @@ from realtime.pipeline import RealtimeSpoofingPipeline
 from realtime.types import RealtimeEpochPair
 from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
 from telemetry.mqtt_schema import (
+    build_command_branch_message,
     build_detect_epoch_message,
     build_health_message,
     build_position_state_message,
@@ -77,6 +78,25 @@ class SocketThread:
     @staticmethod
     def create_mqtt_publisher(component: str) -> MqttTelemetryPublisher:
         return MqttTelemetryPublisher(MqttPublishSettings.from_config(config, component))
+
+    @staticmethod
+    def _publish_command_branch(
+        mqtt_publisher: MqttTelemetryPublisher,
+        metrics: dict[str, int],
+        lock: threading.Lock,
+    ) -> None:
+        try:
+            messages = build_command_branch_message(
+                topic_prefix=config.MQTT_TOPIC_PREFIX,
+                site_id=config.MQTT_SITE_ID,
+                device_id=config.MQTT_DEVICE_ID,
+                seq=1,
+            )
+            for topic, message in messages:
+                mqtt_publisher.publish(topic, message, retain=True)
+                LOGGER.debug("command_branch_published topic=%s", topic)
+        except Exception:
+            LOGGER.exception("command_branch_init_error")
 
     @staticmethod
     def _increment_metric(metrics: dict[str, int], lock: threading.Lock, key: str, amount: int = 1) -> None:
@@ -269,6 +289,7 @@ class SocketThread:
     def detect_consumer_thread(detect_queue, socketio, metrics: dict[str, int], lock: threading.Lock) -> None:
         realtime_pipeline = RealtimeSpoofingPipeline()
         mqtt_publisher = SocketThread.create_mqtt_publisher("detect")
+        SocketThread._publish_command_branch(mqtt_publisher, metrics, lock)
         combined_samples: list[Any] = []
         last_plot_time = time.time()
         LOGGER.info("detect_consumer_started")

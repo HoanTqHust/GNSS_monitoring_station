@@ -4,12 +4,13 @@
 
 File này mô tả cấu trúc JSON dự kiến publish lên MQTT broker để một server khác có thể subscribe và xử lý dữ liệu GNSS realtime.
 
-Schema được thiết kế cho 4 nhóm dữ liệu:
+Schema được thiết kế cho 5 nhóm dữ liệu:
 
 - Raw u-blox frame hiện tại.
 - Detect result theo từng epoch đồng bộ giữa 2 receiver.
 - Raw SDR frontend trong tương lai.
 - Health/runtime metrics của pipeline.
+- Command branch để server gửi lệnh xuống local client (chiều ngược lại).
 
 Nguyên tắc thiết kế:
 
@@ -23,7 +24,7 @@ Nguyên tắc thiết kế:
 
 ## 2) Topic MQTT
 
-Topic đề xuất:
+Topic đề xuất (client → server):
 
 ```text
 gnss/{site_id}/{device_id}/raw/ublox/v1
@@ -33,12 +34,22 @@ gnss/{site_id}/{device_id}/state/position/v1
 gnss/{site_id}/{device_id}/health/v1
 ```
 
+Topic command (server → client):
+
+```text
+gnss/{site_id}/{device_id}/cmd/init/v1
+gnss/{site_id}/{device_id}/cmd/ack/v1
+gnss/{site_id}/{device_id}/cmd/{command_type}/v1
+```
+
 Ví dụ:
 
 ```text
 gnss/lab_hanoi/ducanh_user/raw/ublox/v1
 gnss/lab_hanoi/ducanh_user/detect/epoch/v1
 gnss/lab_hanoi/ducanh_user/health/v1
+gnss/lab_hanoi/ducanh_user/cmd/init/v1
+gnss/lab_hanoi/ducanh_user/cmd/ack/v1
 ```
 
 Ý nghĩa:
@@ -50,6 +61,9 @@ gnss/lab_hanoi/ducanh_user/health/v1
 - `detect/epoch/v1`: kết quả detect cho một epoch đã đồng bộ.
 - `state/position/v1`: vị trí mới nhất, có thể publish retain nếu cần server mới vào đọc trạng thái gần nhất.
 - `health/v1`: backlog, dropped counter, process status.
+- `cmd/init/v1`: client publish khi khởi động để báo ready, retain=true để server mới vào biết client online.
+- `cmd/ack/v1`: client publish ack khi nhận được command từ server.
+- `cmd/{command_type}/v1`: lệnh server gửi xuống client, server publish QoS 1, retain=false.
 
 Cấu hình QoS bắt buộc:
 
@@ -60,6 +74,9 @@ Cấu hình QoS bắt buộc:
 | `state/position/v1` | 1 | true hoặc false | Dùng `retain=true` nếu server cần vị trí mới nhất ngay khi subscribe. |
 | `raw/ublox/v1` | 1 | false | Bắt buộc QoS 1 để giảm thất thoát raw frame trên đường MQTT; luôn theo dõi `seq`. |
 | `raw/sdr/v1` | 1 | false | Bắt buộc QoS 1 dù payload có thể lớn; cần kiểm soát throughput/backpressure khi triển khai SDR. |
+| `cmd/init/v1` | 1 | true | Client publish khi khởi động để server biết client online. |
+| `cmd/ack/v1` | 1 | false | Client publish khi nhận và xử lý command. |
+| `cmd/{command_type}/v1` | 1 | false | Server publish command xuống client. |
 
 Ghi chú về QoS 1:
 
@@ -535,7 +552,122 @@ Field trong `data`:
 
 ---
 
-## 9) Hướng dẫn cho server subscriber
+## 9) Schema Command (server → client)
+
+### 9.1 Mục đích
+
+Chiều dữ liệu ngược lại: server gửi lệnh xuống local client. Client subscribe topic `cmd/{command_type}/v1` để nhận lệnh và publish `cmd/ack/v1` để xác nhận.
+
+Client tự động publish `cmd/init/v1` (retain=true) khi khởi động để:
+- Server biết client đang online.
+- Server mới subscribe có thể đọc được trạng thái gần nhất của client.
+
+### 9.2 Schema `gnss.cmd.init.v1`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/init/v1
+```
+
+Client publish retain=true khi khởi động để báo ready.
+
+```json
+{
+  "schema": "gnss.cmd.init.v1",
+  "event_id": "test_device-cmd_init-000000000001",
+  "seq": 1,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "pipeline",
+  "event_time": "2026-05-10T14:30:00.000Z",
+  "ingest_time": "2026-05-10T14:30:00.000Z",
+  "data": {
+    "status": "online",
+    "ready": true
+  }
+}
+```
+
+Field trong `data`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `status` | string | yes | `online` khi client khởi động thành công. |
+| `ready` | boolean | yes | `true` khi pipeline sẵn sàng nhận lệnh. |
+
+### 9.3 Schema `gnss.cmd.ack.v1`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/ack/v1
+```
+
+Client publish khi nhận và xử lý xong một command.
+
+```json
+{
+  "schema": "gnss.cmd.ack.v1",
+  "event_id": "test_device-cmd_ack-000000000001",
+  "seq": 1,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "pipeline",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "acknowledged": ["cmd_e1", "cmd_e2"]
+  }
+}
+```
+
+Field trong `data`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `acknowledged` | array[string] | yes | Danh sách `event_id` của các command đã xử lý thành công. |
+
+### 9.4 Command format (server → client)
+
+Server publish command lên topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/{command_type}/v1
+```
+
+```json
+{
+  "schema": "gnss.cmd.{command_type}.v1",
+  "event_id": "server-cmd_e1",
+  "seq": 1,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "server",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "command_id": "cmd_e1",
+    "command_type": "{command_type}",
+    "params": {}
+  }
+}
+```
+
+Field trong `data`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `command_id` | string | yes | ID unique của command, dùng để client ack. |
+| `command_type` | string | yes | Loại command, ví dụ `restart`, `calibrate`, `configure`. |
+| `params` | object | yes | Tham số cho command, structure tùy loại command. |
+
+---
+
+## 10) Hướng dẫn cho server subscriber
 
 Server chỉ cần kết quả spoofing:
 
@@ -575,7 +707,7 @@ Xử lý status:
 
 ---
 
-## 10) Mapping từ mẫu ban đầu sang schema mới
+## 11) Mapping từ mẫu ban đầu sang schema mới
 
 Mẫu ban đầu:
 
@@ -620,7 +752,7 @@ Lý do không giữ schema phẳng:
 
 ---
 
-## 11) Quy tắc tương thích
+## 12) Quy tắc tương thích
 
 Trong `v1`:
 
@@ -641,7 +773,7 @@ health.status: running | degraded | stopped | error
 
 ---
 
-## 12) Checklist cho server ngoài
+## 13) Checklist cho server ngoài
 
 - Subscribe đúng topic theo nhu cầu, không subscribe `raw/#` nếu chỉ cần spoofing status.
 - Validate `schema` trước khi parse `data`.
@@ -650,10 +782,13 @@ health.status: running | degraded | stopped | error
 - Chấp nhận `null` cho field chưa có giá trị.
 - Dùng field có đơn vị rõ ràng: `_deg`, `_m`, `_s`, `_hz`, `_dbhz`.
 - Không suy luận spoofing từ mỗi detector riêng lẻ nếu đã có `data.summary`.
+- Để nhận command từ server: subscribe `gnss/{site_id}/{device_id}/cmd/{command_type}/v1`.
+- Để gửi command: publish lên topic `gnss/{site_id}/{device_id}/cmd/{command_type}/v1` với QoS 1.
+- Server nên theo dõi `cmd/ack/v1` để biết command đã được client xử lý.
 
 ---
 
-## 13) Cấu hình publisher trong app
+## 14) Cấu hình publisher trong app
 
 App đọc cấu hình MQTT từ environment hoặc `.env`:
 
@@ -687,3 +822,5 @@ Mapping runtime hiện tại:
 | `epoch_pair` sau realtime detector | `gnss/{site_id}/{device_id}/detect/epoch/v1` |
 | Position rút gọn từ detect message | `gnss/{site_id}/{device_id}/state/position/v1` |
 | Queue/MQTT metrics sau raw batch | `gnss/{site_id}/{device_id}/health/v1` |
+| Client khởi động (retain) | `gnss/{site_id}/{device_id}/cmd/init/v1` |
+| Client ack command | `gnss/{site_id}/{device_id}/cmd/ack/v1` |

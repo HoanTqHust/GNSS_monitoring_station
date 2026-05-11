@@ -58,6 +58,51 @@ def build_event_id(device_id: str, seq: int, suffix: str = "") -> str:
     return f"{device_id}-{int(seq):012d}{suffix_part}"
 
 
+def build_command_branch_message(
+    *,
+    topic_prefix: str,
+    site_id: str,
+    device_id: str,
+    seq: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    now = utc_now_z()
+    envelope_base = {
+        "seq": int(seq),
+        "device_id": device_id,
+        "site_id": site_id,
+        "frontend": "ublox",
+        "event_time": now,
+        "ingest_time": now,
+    }
+
+    commands = [
+        ("cmd/init/v1", {
+            **envelope_base,
+            "schema": "gnss.cmd.init.v1",
+            "source": "pipeline",
+            "event_id": build_event_id(device_id, seq, "cmd_init"),
+            "data": {
+                "status": "online",
+                "ready": True,
+            },
+        }),
+        ("cmd/ack/v1", {
+            **envelope_base,
+            "schema": "gnss.cmd.ack.v1",
+            "source": "pipeline",
+            "event_id": build_event_id(device_id, seq, "cmd_ack"),
+            "data": {
+                "acknowledged": [],
+            },
+        }),
+    ]
+
+    return [
+        (build_topic(topic_prefix, site_id, device_id, suffix), msg)
+        for suffix, msg in commands
+    ]
+
+
 def build_envelope(
     *,
     schema: str,

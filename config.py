@@ -39,11 +39,11 @@ class config:
     
     ELE_MASK = int(os.environ.get("ELE_MASK", 15))
 
-    RAM_INGRESS_QUEUE_SIZE = int(os.environ.get("RAM_INGRESS_QUEUE_SIZE", 5000))
+    RAM_INGRESS_QUEUE_SIZE = int(os.environ.get("RAM_INGRESS_QUEUE_SIZE", 500000))
 
-    RAM_DETECT_QUEUE_SIZE = int(os.environ.get("RAM_DETECT_QUEUE_SIZE", 2000))
+    RAM_DETECT_QUEUE_SIZE = int(os.environ.get("RAM_DETECT_QUEUE_SIZE", 200000))
 
-    RAM_RAW_QUEUE_SIZE = int(os.environ.get("RAM_RAW_QUEUE_SIZE", 5000))
+    RAM_RAW_QUEUE_SIZE = int(os.environ.get("RAM_RAW_QUEUE_SIZE", 500000))
 
     RAM_QUEUE_POLL_INTERVAL = float(os.environ.get("RAM_QUEUE_POLL_INTERVAL", 0.02))
 
@@ -66,7 +66,7 @@ class config:
     D3_MIN_CLUSTER_SIZE = int(os.environ.get("D3_MIN_CLUSTER_SIZE", 3))
 
     MQTT_ENABLED = _env_bool("MQTT_ENABLED", True)
-    MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
+    MQTT_HOST = os.environ.get("MQTT_HOST", "gnss.soict.io")
     MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
     MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "rw_user")
     MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "rw")

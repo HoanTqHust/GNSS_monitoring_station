@@ -20,6 +20,41 @@ Nguồn đối chiếu:
 - `git show --name-status <commit>`
 - Core memory: `docs/context.md`, `docs/codebase-map.md`
 
+## Cập nhật vận hành gần nhất (local, chưa commit)
+
+Ngày cập nhật: `2026-05-06`  
+Trạng thái: chưa có commit mới trên `dev/hoantran` trong lần làm việc này, nhưng có thay đổi local để khôi phục runtime.
+
+Nội dung chính:
+
+1. Sửa regression startup do thiếu field MQTT trong `config.py`:
+- Lỗi: `AttributeError: type object 'config' has no attribute 'MQTT_ENABLED'`.
+- Đã khôi phục `_env_bool` và các biến:
+  - `MQTT_ENABLED`, `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`,
+    `MQTT_CLIENT_ID_PREFIX`, `MQTT_TOPIC_PREFIX`, `MQTT_SITE_ID`, `MQTT_DEVICE_ID`,
+    `MQTT_QOS`, `MQTT_KEEPALIVE_S`, `MQTT_PUBLISH_TIMEOUT_S`, `MQTT_POSITION_RETAIN`.
+- Log debug: `logs/debug/app_start_20260506_0333.log`, `logs/debug/app_start_20260506_0335_after_fix.log`.
+
+2. Khôi phục luồng publish MQTT (Option A) trong `thread/SocketThread.py`:
+- Trước khi sửa: runtime vẫn ingest serial nhưng không còn gọi MQTT publish path.
+- Đã khôi phục:
+  - raw: `raw/ublox/v1`
+  - detect: `detect/epoch/v1`
+  - position: `state/position/v1`
+  - health: `health/v1`
+- Đã khôi phục metric MQTT trong queue stats:
+  - `mqtt_raw_published/failed`
+  - `mqtt_detect_published/failed`
+  - `mqtt_position_published/failed`
+  - `mqtt_health_published/failed`
+- Smoke log xác nhận publish trở lại:
+  - `logs/debug/mqtt_restore_optionA_20260506.log` (có nhiều dòng `mqtt_publish_ok`).
+
+3. Kết luận vận hành tại thời điểm cập nhật:
+- Data GNSS vẫn ingest bình thường.
+- MQTT publish đã hoạt động lại sau khi restore `SocketThread`.
+- Luồng runtime hiện tại vẫn là RAM queue (không phải durable queue).
+
 ## Cách cập nhật khi có commit mới
 
 1. Lấy danh sách commit mới:
