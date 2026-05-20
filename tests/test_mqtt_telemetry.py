@@ -2,7 +2,7 @@ import json
 import unittest
 
 from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
-from telemetry.mqtt_subscriber import MqttSubscribeSettings
+from telemetry.mqtt_subscriber import CommandContext, MqttCommandSubscriber, MqttSubscribeSettings
 from telemetry.mqtt_schema import (
     build_detect_epoch_message,
     build_health_message,
@@ -91,6 +91,25 @@ class FakeClient:
         info = FakePublishInfo()
         self.last_publish_info = info
         return info
+
+    def subscribe(self, topic, qos=0):
+        self.published.append({"topic": topic, "qos": qos, "subscribe": True})
+        return (0, 1)
+
+
+class FakeAckPublisher:
+    def __init__(self):
+        self.calls = []
+
+    def publish(self, topic, message, **kwargs):
+        self.calls.append({"topic": topic, "message": message, "kwargs": kwargs})
+        return True
+
+
+class FakeIncomingMessage:
+    def __init__(self, topic, payload):
+        self.topic = topic
+        self.payload = payload
 
 
 class MqttTelemetrySchemaTests(unittest.TestCase):
@@ -282,6 +301,138 @@ class MqttSubscribeSettingsTests(unittest.TestCase):
             subscribe_timeout_s=2.0,
         )
         settings.validate()
+
+
+class MqttCommandSubscriberTopicTests(unittest.TestCase):
+    def _build_subscriber(self) -> MqttCommandSubscriber:
+        settings = MqttSubscribeSettings(
+            enabled=False,
+            host="localhost",
+            port=1883,
+            username="rw_user",
+            password="secret",
+            client_id="sub-client",
+            qos=1,
+            keepalive_s=60,
+            subscribe_timeout_s=2.0,
+        )
+        ack_publisher = FakeAckPublisher()
+        context = CommandContext(
+            site_id="lab_hanoi",
+            device_id="test_device",
+            topic_prefix="gnss",
+            mqtt_publisher=ack_publisher,
+            realtime_pipeline=None,
+        )
+        subscriber = MqttCommandSubscriber(settings=settings, context=context)
+        subscriber._ack_publisher = ack_publisher
+        return subscriber
+
+    def test_build_command_topics_matches_readme_shape(self):
+        subscriber = self._build_subscriber()
+        topics = subscriber._build_command_topics()
+        self.assertEqual(
+            topics,
+            [
+                "gnss/lab_hanoi/test_device/cmd/+/v1",
+                "gnss/lab_hanoi/test_device/cmd/+/+/v1",
+            ],
+        )
+
+    def test_dispatch_parses_nested_command_type(self):
+        subscriber = self._build_subscriber()
+
+        class DummyHandler:
+            def handle_configure(self, command):
+                self.last_command = command
+                return {"status": "applied"}
+
+        subscriber._command_handler = DummyHandler()
+        result = subscriber._dispatch_command(
+            "gnss/lab_hanoi/test_device/cmd/ublox/configure/v1",
+            {"data": {"command_id": "cmd1"}},
+        )
+        self.assertEqual(result["status"], "applied")
+
+    def test_dispatch_parses_one_level_command_type(self):
+        subscriber = self._build_subscriber()
+
+        class DummyHandler:
+            def handle_restart(self, command):
+                self.last_command = command
+                return {"status": "completed"}
+
+        subscriber._command_handler = DummyHandler()
+        result = subscriber._dispatch_command(
+            "gnss/lab_hanoi/test_device/cmd/reboot/v1",
+            {"data": {"command_id": "cmd1"}},
+        )
+        self.assertEqual(result["status"], "completed")
+
+    def test_dispatch_rejects_invalid_topic_shape(self):
+        subscriber = self._build_subscriber()
+        result = subscriber._dispatch_command(
+            "gnss/lab_hanoi/test_device/command/reboot/v1",
+            {"data": {"command_id": "cmd1"}},
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("invalid_command_topic", result["reason"])
+
+    def test_on_message_fallbacks_command_id_from_event_id(self):
+        subscriber = self._build_subscriber()
+
+        class DummyHandler:
+            def handle_restart(self, command):
+                self.last_command = command
+                return {"status": "completed"}
+
+        subscriber._command_handler = DummyHandler()
+        payload = {
+            "event_id": "server-evt-1",
+            "data": {
+                "command_type": "reboot",
+                "params": {"scope": "pipeline"},
+            },
+        }
+        msg = FakeIncomingMessage(
+            "gnss/lab_hanoi/test_device/cmd/reboot/v1",
+            json.dumps(payload).encode("utf-8"),
+        )
+        subscriber._on_message(None, None, msg)
+
+        self.assertEqual(len(subscriber._ack_publisher.calls), 1)
+        ack = subscriber._ack_publisher.calls[0]["message"]
+        self.assertEqual(ack["data"]["acknowledged"], ["server-evt-1"])
+
+    def test_on_message_skips_cmd_ack_topic(self):
+        subscriber = self._build_subscriber()
+        payload = {
+            "event_id": "test-device-cmd-ack-1",
+            "data": {
+                "acknowledged": ["server-cmd-1"],
+            },
+        }
+        msg = FakeIncomingMessage(
+            "gnss/lab_hanoi/test_device/cmd/ack/v1",
+            json.dumps(payload).encode("utf-8"),
+        )
+        subscriber._on_message(None, None, msg)
+        self.assertEqual(len(subscriber._ack_publisher.calls), 0)
+
+    def test_on_message_skips_cmd_init_topic(self):
+        subscriber = self._build_subscriber()
+        payload = {
+            "event_id": "test-device-cmd-init-1",
+            "data": {
+                "ready": True,
+            },
+        }
+        msg = FakeIncomingMessage(
+            "gnss/lab_hanoi/test_device/cmd/init/v1",
+            json.dumps(payload).encode("utf-8"),
+        )
+        subscriber._on_message(None, None, msg)
+        self.assertEqual(len(subscriber._ack_publisher.calls), 0)
 
 
 if __name__ == "__main__":

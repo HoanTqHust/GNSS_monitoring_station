@@ -96,6 +96,12 @@
   - edit `telemetry/mqtt_schema.py` for payload shape and topic mapping
   - edit `telemetry/mqtt_publisher.py` for broker publish behavior
   - use `wait_for_ack=False` only for high-rate non-critical paths (current raw UBX path) to avoid consumer-loop blocking
+  - keep command subscriber topic contract aligned with README:
+    - subscribe both `gnss/{site_id}/{device_id}/cmd/+/v1` and `gnss/{site_id}/{device_id}/cmd/+/+/v1`
+    - parse command type from `cmd/{command_type}/v1` suffix (supports one-level and nested `ublox/*`)
+    - fallback command id from `event_id` when `data.command_id` is missing, so ACK/dedupe still works with legacy server payloads
+    - skip internal branch topics `cmd/init/v1` and `cmd/ack/v1` in subscriber receive path
+  - prefer explicit log markers for command lifecycle in runtime logs (`cmd_init_published`, `cmd_ack_published`)
   - keep the transport adapter after RAM routing/consumer output boundaries, not inside detector engines
   - keep raw UBX/SDR payloads on raw topics and publish detector summaries on detect topics
   - version every published schema and include sequence numbers for duplicate/gap detection

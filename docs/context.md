@@ -401,3 +401,65 @@ No statement in this document is based on external assumptions beyond the curren
   - `python3 -m py_compile thread/SocketThread.py telemetry/mqtt_schema.py config.py tests/test_ram_queue_flow.py tests/test_mqtt_telemetry.py`
   - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `4 passed`
   - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `6 passed`
+
+## Command Topic Contract Alignment (2026-05-20)
+
+- Updated MQTT command subscriber path to match README command contract:
+  - subscribe pattern is now `gnss/{site_id}/{device_id}/cmd/+/+/v1` (covers current `cmd/ublox/{action}/v1`).
+  - command topic parsing now extracts `command_type` from `cmd/{command_type}/v1` suffix (`ublox/configure`, `ublox/restart`, ...).
+  - invalid topic shapes (for example `cmd/configure/v1`) are rejected with explicit `invalid_command_topic` error.
+- This preserves existing behavior for:
+  - `cmd/init/v1` publish on startup (retain=true)
+  - `cmd/ack/v1` publish after command handling
+- Validation:
+  - `python3 -m py_compile telemetry/mqtt_subscriber.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `9 passed`
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `4 passed`
+
+## Command Observability Logs (2026-05-20)
+
+- Added explicit log markers for command branch observability:
+  - `cmd_init_published` when client publishes `cmd/init/v1` at startup.
+  - `cmd_ack_published` when client publishes `cmd/ack/v1` after processing a server command.
+- Validation:
+  - `python3 -m py_compile thread/SocketThread.py telemetry/mqtt_subscriber.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `9 passed`
+
+## Legacy Command Topic Compatibility (2026-05-20)
+
+- MQTT command subscriber now supports both topic shapes:
+  - `gnss/{site_id}/{device_id}/cmd/{command_type}/v1` (one-level)
+  - `gnss/{site_id}/{device_id}/cmd/{namespace}/{command}/v1` (nested, current ublox shape)
+- Added one-level handler aliases:
+  - `reboot` -> restart handler
+  - `set_rate` -> configure handler
+  - `start`, `stop`, `status` -> matching handlers
+- This keeps backward compatibility with server topics like:
+  - `.../cmd/reboot/v1`
+  - `.../cmd/set_rate/v1`
+- Validation:
+  - `python3 -m py_compile telemetry/mqtt_subscriber.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `10 passed`
+
+## Command ID Fallback for Server Payloads (2026-05-20)
+
+- Subscriber now falls back to `event_id` when `data.command_id` is missing:
+  - `command_id = data.command_id or event_id`
+- This allows client to process and ACK legacy server messages like:
+  - `cmd/set_rate/v1` where payload contains `event_id` but no `data.command_id`.
+- ACK behavior remains unchanged:
+  - `cmd/ack/v1` publishes `acknowledged: [command_id]`, now using `event_id` fallback when needed.
+- Validation:
+  - `python3 -m py_compile telemetry/mqtt_subscriber.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `11 passed`
+
+## Skip Internal Command Topics (2026-05-20)
+
+- Subscriber now ignores internal command branch topics:
+  - `cmd/init/v1`
+  - `cmd/ack/v1`
+- Reason:
+  - prevent self-processing loop where client receives its own `cmd/ack` and emits another ACK with `unknown_command_type:ack`.
+- Validation:
+  - `python3 -m py_compile telemetry/mqtt_subscriber.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `13 passed`

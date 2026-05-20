@@ -74,7 +74,7 @@ class config:
     MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "rw")
     MQTT_CLIENT_ID_PREFIX = os.environ.get("MQTT_CLIENT_ID_PREFIX", "double-difference-cp")
     MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "gnss")
-    MQTT_SITE_ID = os.environ.get("MQTT_SITE_ID", "lab_hanoi")
+    MQTT_SITE_ID = os.environ.get("MQTT_SITE_ID", "default_site")
     MQTT_DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", "test_device")
     MQTT_QOS = int(os.environ.get("MQTT_QOS", 1))
     MQTT_KEEPALIVE_S = int(os.environ.get("MQTT_KEEPALIVE_S", 60))

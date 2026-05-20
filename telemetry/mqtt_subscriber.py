@@ -169,6 +169,13 @@ class UbloxCommandHandler:
 
 class MqttCommandSubscriber:
     _HANDLERS: dict[str, str] = {
+        # Legacy one-level command types.
+        "reboot": "handle_restart",
+        "set_rate": "handle_configure",
+        "start": "handle_start",
+        "stop": "handle_stop",
+        "status": "handle_status",
+        # Nested ublox command types.
         "ublox/configure": "handle_configure",
         "ublox/restart": "handle_restart",
         "ublox/start": "handle_start",
@@ -215,11 +222,12 @@ class MqttCommandSubscriber:
                 return
             try:
                 client = self._ensure_client()
-                topic = self._build_command_topic()
-                client.subscribe(topic, qos=self.settings.qos)
+                topics = self._build_command_topics()
+                for topic in topics:
+                    client.subscribe(topic, qos=self.settings.qos)
                 self._logger.info(
-                    "mqtt_subscriber_started topic=%s qos=%s",
-                    topic,
+                    "mqtt_subscriber_started topics=%s qos=%s",
+                    topics,
                     self.settings.qos,
                 )
                 self._running = True
@@ -240,18 +248,27 @@ class MqttCommandSubscriber:
             except Exception:
                 self._logger.exception("mqtt_subscriber_stop_error")
 
-    def _build_command_topic(self) -> str:
-        parts = [
+    def _build_command_topics(self) -> list[str]:
+        base_parts = [
             self._context.topic_prefix.strip("/"),
             self._context.site_id.strip("/"),
             self._context.device_id.strip("/"),
             "cmd",
-            "+",
-            "v1",
         ]
-        return "/".join(parts)
+        base = "/".join(base_parts)
+        # Support both one-level command_type (`cmd/reboot/v1`) and nested
+        # command_type (`cmd/ublox/configure/v1`) shapes.
+        return [f"{base}/+/v1", f"{base}/+/+/v1"]
 
     def _on_message(self, client: Any, userdata: Any, msg: Any) -> None:
+        del client, userdata
+        topic_parts = msg.topic.strip("/").split("/")
+        if len(topic_parts) >= 6 and topic_parts[3] == "cmd" and topic_parts[-1] == "v1":
+            command_type = "/".join(topic_parts[4:-1])
+            if command_type in {"init", "ack"}:
+                self._logger.debug("mqtt_subscriber_skip_internal_command topic=%s", msg.topic)
+                return
+
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -259,7 +276,8 @@ class MqttCommandSubscriber:
             return
 
         try:
-            command_id = payload.get("data", {}).get("command_id")
+            command_data = payload.get("data", {})
+            command_id = command_data.get("command_id") or payload.get("event_id")
             if not command_id:
                 self._logger.warning("mqtt_subscriber_missing_command_id topic=%s", msg.topic)
                 return
@@ -280,10 +298,14 @@ class MqttCommandSubscriber:
 
     def _dispatch_command(self, topic: str, command: dict[str, Any]) -> dict[str, Any]:
         topic_parts = topic.strip("/").split("/")
-        if len(topic_parts) >= 5:
-            command_type = "/".join(topic_parts[3:5])
-        else:
-            command_type = topic_parts[-2] if len(topic_parts) >= 2 else ""
+        if len(topic_parts) < 6 or topic_parts[3] != "cmd" or topic_parts[-1] != "v1":
+            self._logger.warning("mqtt_subscriber_invalid_command_topic topic=%s", topic)
+            return {"status": "error", "reason": f"invalid_command_topic:{topic}"}
+
+        command_type = "/".join(topic_parts[4:-1])
+        if not command_type:
+            self._logger.warning("mqtt_subscriber_invalid_command_type topic=%s", topic)
+            return {"status": "error", "reason": f"invalid_command_type:{topic}"}
 
         handler_name = self._HANDLERS.get(command_type)
         if not handler_name:
@@ -309,7 +331,12 @@ class MqttCommandSubscriber:
                 extra_data=result,
             )
             self._context.mqtt_publisher.publish(topic, message)
-            self._logger.debug("mqtt_ack_published command_id=%s", command_id)
+            self._logger.info(
+                "cmd_ack_published topic=%s command_id=%s event_id=%s",
+                topic,
+                command_id,
+                message.get("event_id"),
+            )
         except Exception:
             self._logger.exception("mqtt_ack_publish_error command_id=%s", command_id)
 

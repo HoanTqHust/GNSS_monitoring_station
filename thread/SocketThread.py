@@ -101,6 +101,12 @@ class SocketThread:
             for topic, message in messages:
                 mqtt_publisher.publish(topic, message, retain=True)
                 LOGGER.debug("command_branch_published topic=%s", topic)
+                if topic.endswith("/cmd/init/v1"):
+                    LOGGER.info(
+                        "cmd_init_published topic=%s event_id=%s",
+                        topic,
+                        message.get("event_id"),
+                    )
         except Exception:
             LOGGER.exception("command_branch_init_error")
 
