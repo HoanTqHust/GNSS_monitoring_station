@@ -351,3 +351,53 @@ No statement in this document is based on external assumptions beyond the curren
   - ping to `192.168.1.50` has 100% packet loss
 - Conclusion:
   - failure occurs before MQTT auth/ACL stage; root cause is network reachability path (routing/firewall/broker bind) between app host and `192.168.1.50`.
+
+## Pending Backlog RCA (2026-05-20)
+
+- Symptom:
+  - dashboard `pending_events` grows quickly during runtime.
+- Log evidence (startup `2026-05-20 09:28 UTC`):
+  - producer rate estimate from `epoch_pair_enqueued seq` delta:
+    - first sample: `09:28:09.842 seq=69`
+    - last sample: `09:30:59.298 seq=40934`
+    - derived ingest rate: about `241 events/s`.
+  - MQTT raw consumer publish rate from `mqtt_publish_ok ... raw/ublox/v1`:
+    - about `10.41 raw messages/s` average in the same window.
+  - health publish rate is also about `10.41 messages/s`, indicating one extra MQTT publish per raw flush.
+- Deterministic code-level repro:
+  - `MqttSubscribeSettings` currently has no `validate()` method.
+  - `MqttCommandSubscriber.__init__()` calls `self.settings.validate()` and raises:
+    - `AttributeError: 'MqttSubscribeSettings' object has no attribute 'validate'`.
+  - effect: detect consumer setup stops before `detect_consumer_started` log.
+- Root causes:
+  - raw path bottleneck: synchronous QoS1 MQTT publish + wait for every raw frame, plus health publish every flush, limits consumer throughput far below ingest rate.
+  - detect path unavailable: subscriber init crash prevents detect consumer loop from running, so detect queue backlog contributes to `pending_events`.
+
+## Pending Backlog Fix (2026-05-20)
+
+- Implemented fixes:
+  - Added `MqttSubscribeSettings.validate()` in `telemetry/mqtt_subscriber.py` to stop `AttributeError` during detect-consumer initialization.
+  - Added optional `wait_for_ack` flag to `MqttTelemetryPublisher.publish()` and switched raw UBX publish path to `wait_for_ack=False` in `thread/SocketThread.py` so raw consumer does not block on per-frame ACK waits.
+  - Added `RAM_HEALTH_PUBLISH_INTERVAL` in `config.py` (default `1.0s`) and throttled health-topic publishing in raw consumer loop to reduce extra MQTT load.
+- Validation:
+  - `python3 -m py_compile telemetry/mqtt_subscriber.py telemetry/mqtt_publisher.py thread/SocketThread.py config.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `6 passed`
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `3 passed`
+  - deterministic repro script now shows:
+    - `has_validate True`
+    - `subscriber_init_ok`
+
+## Raw MQTT Worker Queue Split (2026-05-20)
+
+- Implemented step 2 to decouple raw MQTT publishing from `raw_consumer_thread`:
+  - `thread/SocketThread.py` now creates `mqtt_publish_queue` and starts `raw_mqtt_publish_worker` thread.
+  - `raw_consumer_thread` only enqueues raw events for MQTT via `_enqueue_raw_mqtt_publish()` and continues UI batch emission independently.
+  - Worker thread performs `_publish_raw_ublox()` calls.
+- New runtime config:
+  - `RAM_RAW_MQTT_QUEUE_SIZE` in `config.py` (default `200000`).
+- New observability metric:
+  - `mqtt_raw_queue_dropped` added to runtime metrics and `health/v1` payload.
+- Validation:
+  - `python3 -m py_compile thread/SocketThread.py telemetry/mqtt_schema.py config.py tests/test_ram_queue_flow.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `4 passed`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `6 passed`

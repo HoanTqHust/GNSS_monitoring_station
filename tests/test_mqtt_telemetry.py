@@ -2,6 +2,7 @@ import json
 import unittest
 
 from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
+from telemetry.mqtt_subscriber import MqttSubscribeSettings
 from telemetry.mqtt_schema import (
     build_detect_epoch_message,
     build_health_message,
@@ -65,6 +66,7 @@ class FakeClient:
         self.connected = None
         self.published = []
         self.loop_started = False
+        self.last_publish_info = None
 
     def username_pw_set(self, username, password):
         self.username = username
@@ -86,7 +88,9 @@ class FakeClient:
                 "retain": retain,
             }
         )
-        return FakePublishInfo()
+        info = FakePublishInfo()
+        self.last_publish_info = info
+        return info
 
 
 class MqttTelemetrySchemaTests(unittest.TestCase):
@@ -185,6 +189,7 @@ class MqttTelemetrySchemaTests(unittest.TestCase):
                 "last_seq": 12,
                 "mqtt_raw_published": 8,
                 "mqtt_raw_failed": 1,
+                "mqtt_raw_queue_dropped": 3,
                 "mqtt_detect_published": 2,
                 "mqtt_detect_failed": 0,
                 "mqtt_position_published": 2,
@@ -205,6 +210,7 @@ class MqttTelemetrySchemaTests(unittest.TestCase):
         self.assertEqual(message["data"]["status"], "degraded")
         self.assertEqual(message["data"]["mqtt_raw_published"], 8)
         self.assertEqual(message["data"]["mqtt_raw_failed"], 1)
+        self.assertEqual(message["data"]["mqtt_raw_queue_dropped"], 3)
         self.assertEqual(message["data"]["cpu_percent"], 35.4)
 
 
@@ -234,7 +240,48 @@ class MqttTelemetryPublisherTests(unittest.TestCase):
         self.assertEqual(fake_client.published[0]["topic"], "test/topic")
         self.assertEqual(fake_client.published[0]["qos"], 1)
         self.assertFalse(fake_client.published[0]["retain"])
+        self.assertTrue(fake_client.last_publish_info.wait_called)
         self.assertTrue(json.loads(fake_client.published[0]["payload"])["data"]["ok"])
+
+    def test_publish_can_skip_wait_for_ack(self):
+        fake_client = FakeClient()
+        settings = MqttPublishSettings(
+            enabled=True,
+            host="localhost",
+            port=1883,
+            username="rw_user",
+            password="secret",
+            client_id="test-client",
+            qos=1,
+            keepalive_s=60,
+            publish_timeout_s=1.0,
+        )
+        publisher = MqttTelemetryPublisher(settings, client_factory=lambda: fake_client)
+
+        published = publisher.publish(
+            "test/topic",
+            {"schema": "test.v1", "data": {"ok": True}},
+            wait_for_ack=False,
+        )
+
+        self.assertTrue(published)
+        self.assertFalse(fake_client.last_publish_info.wait_called)
+
+
+class MqttSubscribeSettingsTests(unittest.TestCase):
+    def test_validate_accepts_valid_settings(self):
+        settings = MqttSubscribeSettings(
+            enabled=True,
+            host="localhost",
+            port=1883,
+            username="rw_user",
+            password="secret",
+            client_id="sub-client",
+            qos=1,
+            keepalive_s=60,
+            subscribe_timeout_s=2.0,
+        )
+        settings.validate()
 
 
 if __name__ == "__main__":

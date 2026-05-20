@@ -80,6 +80,8 @@
 - If changing queue reliability behavior:
   - edit queue sizing / poll configs in `config.py`
   - edit overflow routing policy in `thread/SocketThread.py`
+  - adjust health telemetry emission interval via `RAM_HEALTH_PUBLISH_INTERVAL` to avoid excessive publish overhead in high-rate runs
+  - adjust `RAM_RAW_MQTT_QUEUE_SIZE` to tune decoupled raw publish worker backpressure
   - validate with `tests/test_ram_queue_flow.py`
 - If changing the detection algorithm:
   - edit `draws/UbloxChart.py`
@@ -93,6 +95,7 @@
 - If adding MQTT publishing:
   - edit `telemetry/mqtt_schema.py` for payload shape and topic mapping
   - edit `telemetry/mqtt_publisher.py` for broker publish behavior
+  - use `wait_for_ack=False` only for high-rate non-critical paths (current raw UBX path) to avoid consumer-loop blocking
   - keep the transport adapter after RAM routing/consumer output boundaries, not inside detector engines
   - keep raw UBX/SDR payloads on raw topics and publish detector summaries on detect topics
   - version every published schema and include sequence numbers for duplicate/gap detection
@@ -112,6 +115,8 @@
 - Regression attention:
   - whether ingress queue backlog grows without bound
   - whether detect/raw queue drop counters increase under expected load
+  - whether detect consumer actually enters run loop (`detect_consumer_started`) after startup
+  - whether raw MQTT publish throughput is materially below ingest throughput (for example, around `~10/s` publish vs `~200+/s` ingest), which will force `pending_events` growth
   - whether `raw_data_batch` sequence gaps stay at zero in stable runs
   - whether frontend raw tables for `rx1` and `rx2` stay separated and ordered by latest-first index
   - whether `rcvTow` synchronization remains correct
@@ -152,6 +157,8 @@
 - Hotspots:
   - `draws/UbloxChart.py` carries the most mixed responsibilities
   - `thread/ReadSerialThread.py` and `thread/SocketThread.py` still rely on broad `except Exception` handling
+  - `thread/SocketThread.py` now routes raw MQTT publish to a dedicated worker queue; if sustained overload occurs, monitor `mqtt_raw_queue_dropped` and `mqtt_raw_failed`
+  - `telemetry/mqtt_subscriber.py` uses strict MQTT settings validation; invalid credential/port/qos config blocks subscriber startup by design
   - `templates/index.html` is tightly coupled to a specific server address
 
 ## Unknowns

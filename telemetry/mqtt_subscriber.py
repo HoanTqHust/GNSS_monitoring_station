@@ -40,6 +40,22 @@ class MqttSubscribeSettings:
             subscribe_timeout_s=float(getattr(app_config, "MQTT_SUBSCRIBE_TIMEOUT_S", 2.0)),
         )
 
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        if not self.host:
+            raise ValueError("MQTT_HOST must not be empty when MQTT is enabled")
+        if not (1 <= self.port <= 65535):
+            raise ValueError("MQTT_PORT must be in range 1..65535")
+        if not self.username:
+            raise ValueError("MQTT_USERNAME must not be empty when MQTT is enabled")
+        if not self.password:
+            raise ValueError("MQTT_PASSWORD must not be empty when MQTT is enabled")
+        if self.qos != 1:
+            raise ValueError("MQTT_QOS must be 1 for this telemetry contract")
+        if self.subscribe_timeout_s <= 0:
+            raise ValueError("MQTT_SUBSCRIBE_TIMEOUT_S must be positive")
+
 
 CommandHandler = Callable[[Dict[str, Any], Any], Any]
 

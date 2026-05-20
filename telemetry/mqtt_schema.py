@@ -319,6 +319,7 @@ def build_health_message(
         "last_seq": _to_int(stats.get("last_seq")),
         "mqtt_raw_published": _to_int(stats.get("mqtt_raw_published")),
         "mqtt_raw_failed": _to_int(stats.get("mqtt_raw_failed")),
+        "mqtt_raw_queue_dropped": _to_int(stats.get("mqtt_raw_queue_dropped")),
         "mqtt_detect_published": _to_int(stats.get("mqtt_detect_published")),
         "mqtt_detect_failed": _to_int(stats.get("mqtt_detect_failed")),
         "mqtt_position_published": _to_int(stats.get("mqtt_position_published")),

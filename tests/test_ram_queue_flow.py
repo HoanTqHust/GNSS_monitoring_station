@@ -47,6 +47,16 @@ class RamQueueFlowTests(unittest.TestCase):
         self.assertEqual(stats["last_acked_seq"], 4)
         self.assertEqual(stats["pending_events"], 3)
 
+    def test_enqueue_raw_mqtt_publish_with_drop_oldest(self) -> None:
+        mqtt_q = queue.Queue(maxsize=1)
+        mqtt_q.put_nowait({"seq": 1})
+        metrics, lock = SocketThread.create_metrics()
+
+        SocketThread._enqueue_raw_mqtt_publish(mqtt_q, {"seq": 2}, metrics, lock)
+        newest = mqtt_q.get_nowait()
+        self.assertEqual(newest["seq"], 2)
+        self.assertEqual(metrics["mqtt_raw_queue_dropped"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

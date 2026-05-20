@@ -74,7 +74,14 @@ class MqttTelemetryPublisher:
         else:
             self._settings_valid = True
 
-    def publish(self, topic: str, message: dict[str, Any], *, retain: bool = False) -> bool:
+    def publish(
+        self,
+        topic: str,
+        message: dict[str, Any],
+        *,
+        retain: bool = False,
+        wait_for_ack: bool = True,
+    ) -> bool:
         if not self.settings.enabled:
             return False
         if not self._settings_valid:
@@ -98,7 +105,8 @@ class MqttTelemetryPublisher:
                         rc,
                     )
                     return False
-                self._wait_for_publish(info, topic)
+                if wait_for_ack:
+                    self._wait_for_publish(info, topic)
                 self._logger.debug(
                     "mqtt_publish_ok topic=%s qos=%s bytes=%s",
                     topic,

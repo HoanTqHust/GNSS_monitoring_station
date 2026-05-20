@@ -44,10 +44,12 @@ class config:
     RAM_DETECT_QUEUE_SIZE = int(os.environ.get("RAM_DETECT_QUEUE_SIZE", 200000))
 
     RAM_RAW_QUEUE_SIZE = int(os.environ.get("RAM_RAW_QUEUE_SIZE", 500000))
+    RAM_RAW_MQTT_QUEUE_SIZE = int(os.environ.get("RAM_RAW_MQTT_QUEUE_SIZE", 200000))
 
     RAM_QUEUE_POLL_INTERVAL = float(os.environ.get("RAM_QUEUE_POLL_INTERVAL", 0.02))
 
     RAM_RAW_EMIT_BATCH_SIZE = int(os.environ.get("RAM_RAW_EMIT_BATCH_SIZE", 100))
+    RAM_HEALTH_PUBLISH_INTERVAL = _env_float("RAM_HEALTH_PUBLISH_INTERVAL", 1.0)
 
     # Realtime detector test thresholds (to avoid perpetual "Pending").
     SOS_CARRIER_THRESHOLD = _env_float("SOS_CARRIER_THRESHOLD", 0.04)

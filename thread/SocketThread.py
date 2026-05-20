@@ -71,6 +71,7 @@ class SocketThread:
             "last_seq": 0,
             "mqtt_raw_published": 0,
             "mqtt_raw_failed": 0,
+            "mqtt_raw_queue_dropped": 0,
             "mqtt_detect_published": 0,
             "mqtt_detect_failed": 0,
             "mqtt_position_published": 0,
@@ -122,13 +123,53 @@ class SocketThread:
                 site_id=config.MQTT_SITE_ID,
                 device_id=config.MQTT_DEVICE_ID,
             )
-            if mqtt_publisher.publish(topic, message):
+            if mqtt_publisher.publish(topic, message, wait_for_ack=False):
                 SocketThread._increment_metric(metrics, lock, "mqtt_raw_published")
             else:
                 SocketThread._increment_metric(metrics, lock, "mqtt_raw_failed")
         except Exception:
             SocketThread._increment_metric(metrics, lock, "mqtt_raw_failed")
             LOGGER.exception("mqtt_raw_publish_error seq=%s", event.get("seq"))
+
+    @staticmethod
+    def _raw_mqtt_publish_worker(
+        mqtt_publish_queue,
+        mqtt_publisher: MqttTelemetryPublisher,
+        metrics: dict[str, int],
+        lock: threading.Lock,
+    ) -> None:
+        LOGGER.info(
+            "raw_mqtt_publish_worker_started queue_maxsize=%s",
+            config.RAM_RAW_MQTT_QUEUE_SIZE,
+        )
+        while True:
+            try:
+                event = mqtt_publish_queue.get(timeout=config.RAM_QUEUE_POLL_INTERVAL)
+            except queue_module.Empty:
+                continue
+            except Exception:
+                LOGGER.exception("raw_mqtt_worker_read_error")
+                continue
+
+            try:
+                SocketThread._publish_raw_ublox(mqtt_publisher, event, metrics, lock)
+            except Exception:
+                LOGGER.exception("raw_mqtt_worker_publish_error")
+
+    @staticmethod
+    def _enqueue_raw_mqtt_publish(
+        mqtt_publish_queue,
+        event: dict[str, Any],
+        metrics: dict[str, int],
+        lock: threading.Lock,
+    ) -> None:
+        SocketThread._put_with_drop_oldest(
+            mqtt_publish_queue,
+            event,
+            "mqtt_raw_queue_dropped",
+            metrics,
+            lock,
+        )
 
     @staticmethod
     def _publish_detect_epoch(
@@ -410,6 +451,7 @@ class SocketThread:
             "unknown_events": snapshot["unknown_events"],
             "mqtt_raw_published": snapshot["mqtt_raw_published"],
             "mqtt_raw_failed": snapshot["mqtt_raw_failed"],
+            "mqtt_raw_queue_dropped": snapshot["mqtt_raw_queue_dropped"],
             "mqtt_detect_published": snapshot["mqtt_detect_published"],
             "mqtt_detect_failed": snapshot["mqtt_detect_failed"],
             "mqtt_position_published": snapshot["mqtt_position_published"],
@@ -429,14 +471,28 @@ class SocketThread:
     ) -> None:
         LOGGER.info("raw_consumer_started")
         mqtt_publisher = SocketThread.create_mqtt_publisher("raw")
+        mqtt_publish_queue = queue_module.Queue(maxsize=config.RAM_RAW_MQTT_QUEUE_SIZE)
+        mqtt_worker = threading.Thread(
+            target=SocketThread._raw_mqtt_publish_worker,
+            args=(mqtt_publish_queue, mqtt_publisher, metrics, lock),
+            daemon=True,
+            name="raw-mqtt-publisher-worker",
+        )
+        mqtt_worker.start()
         frames_to_emit: list[dict[str, Any]] = []
         last_emit_time = time.time()
+        last_health_publish_time = 0.0
 
         while True:
             try:
                 event = raw_queue.get(timeout=config.RAM_QUEUE_POLL_INTERVAL)
                 seq = int(event.get("seq", 0))
-                SocketThread._publish_raw_ublox(mqtt_publisher, event, metrics, lock)
+                SocketThread._enqueue_raw_mqtt_publish(
+                    mqtt_publish_queue,
+                    event,
+                    metrics,
+                    lock,
+                )
                 frames_to_emit.append(
                     {
                         "seq": seq,
@@ -478,14 +534,16 @@ class SocketThread:
                 )
                 with lock:
                     metrics["raw_emitted"] += len(frames_to_emit)
-                health_stats = SocketThread._build_queue_stats(
-                    ingress_queue,
-                    detect_queue,
-                    raw_queue,
-                    metrics,
-                    lock,
-                )
-                SocketThread._publish_health(mqtt_publisher, health_stats, metrics, lock)
+                if (now - last_health_publish_time) >= config.RAM_HEALTH_PUBLISH_INTERVAL:
+                    health_stats = SocketThread._build_queue_stats(
+                        ingress_queue,
+                        detect_queue,
+                        raw_queue,
+                        metrics,
+                        lock,
+                    )
+                    SocketThread._publish_health(mqtt_publisher, health_stats, metrics, lock)
+                    last_health_publish_time = now
                 frames_to_emit = []
                 last_emit_time = now
             except Exception:
