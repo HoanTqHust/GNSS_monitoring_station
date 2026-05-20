@@ -619,7 +619,11 @@ Client publish khi nhận và xử lý xong một command.
   "event_time": "2026-05-10T14:30:05.000Z",
   "ingest_time": "2026-05-10T14:30:05.000Z",
   "data": {
-    "acknowledged": ["cmd_e1", "cmd_e2"]
+    "acknowledged": ["cmd_e1", "cmd_e2"],
+    "result": {
+      "status": "applied",
+      "applied": ["detectors", "reference_svid"]
+    }
   }
 }
 ```
@@ -629,6 +633,7 @@ Field trong `data`:
 | Field | Type | Bắt buộc | Ý nghĩa |
 | --- | --- | --- | --- |
 | `acknowledged` | array[string] | yes | Danh sách `event_id` của các command đã xử lý thành công. |
+| `result` | object | no | Kết quả chi tiết của command cuối cùng. Chỉ có khi command handler trả về extra data. |
 
 ### 9.4 Command format (server → client)
 
@@ -664,6 +669,253 @@ Field trong `data`:
 | `command_id` | string | yes | ID unique của command, dùng để client ack. |
 | `command_type` | string | yes | Loại command, ví dụ `restart`, `calibrate`, `configure`. |
 | `params` | object | yes | Tham số cho command, structure tùy loại command. |
+
+### 9.5 Schema `gnss.cmd.ublox.*.v1` (server → client)
+
+Client subscribe topic pattern `gnss/{site_id}/{device_id}/cmd/ublox/+/v1` để nhận ublox commands. Client tự động publish `cmd/ack/v1` sau khi xử lý command.
+
+#### 9.5.1 Command `ublox/configure`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/ublox/configure/v1
+```
+
+Server gửi để thay đổi cấu hình detector pipeline.
+
+```json
+{
+  "schema": "gnss.cmd.ublox.configure.v1",
+  "event_id": "server-cmd_e1",
+  "seq": 1,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "server",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "command_id": "cmd_e1",
+    "command_type": "configure",
+    "params": {
+      "detectors": {
+        "sos_carrier": { "threshold": 0.09 },
+        "sos_smoothed_pseudorange": { "threshold": 1.1 },
+        "d3_carrier": { "threshold": 0.02 },
+        "d3_smoothed_pseudorange": { "threshold": 0.5 }
+      },
+      "reference_svid": 3,
+      "min_sat_count": 4
+    }
+  }
+}
+```
+
+Field trong `params`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `detectors` | object | no | Cấu hình threshold cho từng detector. Key là output_name: `sos_carrier`, `sos_smoothed_pseudorange`, `d3_carrier`, `d3_smoothed_pseudorange`. |
+| `detectors[].threshold` | number | no | Ngưỡng mới cho detector tương ứng. |
+| `reference_svid` | integer | no | SVID tham chiếu mới cho double difference. |
+| `min_sat_count` | integer | no | Số vệ tinh tối thiểu để detect (default: 4). |
+
+ACK response trong `data.result`:
+
+```json
+{
+  "status": "applied",
+  "applied": ["detectors", "reference_svid"]
+}
+```
+
+#### 9.5.2 Command `ublox/restart`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/ublox/restart/v1
+```
+
+Server gửi để restart pipeline ublox.
+
+```json
+{
+  "schema": "gnss.cmd.ublox.restart.v1",
+  "event_id": "server-cmd_e2",
+  "seq": 2,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "server",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "command_id": "cmd_e2",
+    "command_type": "restart",
+    "params": {
+      "scope": "pipeline"
+    }
+  }
+}
+```
+
+Field trong `params`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `scope` | string | no | `pipeline` (default) — chỉ reset detector state; `full` — reserved cho future. |
+
+ACK response:
+
+```json
+{
+  "status": "completed",
+  "scope": "pipeline"
+}
+```
+
+#### 9.5.3 Command `ublox/start`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/ublox/start/v1
+```
+
+Server gửi để start pipeline ublox.
+
+```json
+{
+  "schema": "gnss.cmd.ublox.start.v1",
+  "event_id": "server-cmd_e3",
+  "seq": 3,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "server",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "command_id": "cmd_e3",
+    "command_type": "start",
+    "params": {
+      "mode": "realtime"
+    }
+  }
+}
+```
+
+Field trong `params`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `mode` | string | no | `realtime` (default) — chế độ realtime; `sdr_snapshot` — reserved cho future SDR mode. |
+
+ACK response:
+
+```json
+{
+  "status": "started",
+  "mode": "realtime"
+}
+```
+
+#### 9.5.4 Command `ublox/stop`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/ublox/stop/v1
+```
+
+Server gửi để stop pipeline ublox.
+
+```json
+{
+  "schema": "gnss.cmd.ublox.stop.v1",
+  "event_id": "server-cmd_e4",
+  "seq": 4,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "server",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "command_id": "cmd_e4",
+    "command_type": "stop",
+    "params": {
+      "reason": "maintenance"
+    }
+  }
+}
+```
+
+Field trong `params`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `reason` | string | no | Lý do stop: `user_requested`, `maintenance`, `error`, hoặc free-text. |
+
+ACK response:
+
+```json
+{
+  "status": "stopped",
+  "reason": "maintenance"
+}
+```
+
+#### 9.5.5 Command `ublox/status`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/cmd/ublox/status/v1
+```
+
+Server gửi để truy vấn trạng thái pipeline ublox.
+
+```json
+{
+  "schema": "gnss.cmd.ublox.status.v1",
+  "event_id": "server-cmd_e5",
+  "seq": 5,
+  "device_id": "test_device",
+  "site_id": "lab_hanoi",
+  "frontend": "ublox",
+  "source": "server",
+  "event_time": "2026-05-10T14:30:05.000Z",
+  "ingest_time": "2026-05-10T14:30:05.000Z",
+  "data": {
+    "command_id": "cmd_e5",
+    "command_type": "status",
+    "params": {}
+  }
+}
+```
+
+ACK response:
+
+```json
+{
+  "status": {
+    "status": "running",
+    "config": {
+      "reference_svid": 3,
+      "min_sat_count": 4,
+      "detectors": {
+        "sos_carrier": { "threshold": 0.04, "min_cluster_size": null },
+        "sos_smoothed_pseudorange": { "threshold": 1.1, "min_cluster_size": null },
+        "d3_carrier": { "threshold": 0.001, "min_cluster_size": 3 },
+        "d3_smoothed_pseudorange": { "threshold": 0.001, "min_cluster_size": 3 }
+      }
+    }
+  }
+}
+```
 
 ---
 

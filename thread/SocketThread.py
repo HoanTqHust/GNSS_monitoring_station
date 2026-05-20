@@ -20,6 +20,11 @@ from telemetry.mqtt_schema import (
     build_position_state_message,
     build_raw_ublox_message,
 )
+from telemetry.mqtt_subscriber import (
+    MqttCommandSubscriber,
+    MqttSubscribeSettings,
+    SharedPipelineState,
+)
 
 LOGGER = logging.getLogger("thread.socket_thread")
 
@@ -290,70 +295,85 @@ class SocketThread:
         realtime_pipeline = RealtimeSpoofingPipeline()
         mqtt_publisher = SocketThread.create_mqtt_publisher("detect")
         SocketThread._publish_command_branch(mqtt_publisher, metrics, lock)
+
+        state = SharedPipelineState.get_instance()
+        state.realtime_pipeline = realtime_pipeline
+        state.pipeline_status["status"] = "running"
+
+        command_subscriber = MqttCommandSubscriber(
+            settings=MqttSubscribeSettings.from_config(config, "detect"),
+            context=state.get_context(mqtt_publisher),
+        )
+        command_subscriber.start()
+
         combined_samples: list[Any] = []
         last_plot_time = time.time()
         LOGGER.info("detect_consumer_started")
 
-        while True:
-            try:
-                event = detect_queue.get(timeout=config.RAM_QUEUE_POLL_INTERVAL)
-            except queue_module.Empty:
-                continue
-            except Exception:
-                LOGGER.exception("detect_consumer_read_error")
-                continue
+        try:
+            while True:
+                try:
+                    event = detect_queue.get(timeout=config.RAM_QUEUE_POLL_INTERVAL)
+                except queue_module.Empty:
+                    continue
+                except Exception:
+                    LOGGER.exception("detect_consumer_read_error")
+                    continue
 
-            try:
-                payload = event["payload"]
-                (
-                    realtime_outputs,
-                    skyplot_data_1,
-                    skyplot_data_2,
-                    spectrum_data_1,
-                    spectrum_data_2,
-                ) = SocketThread._process_epoch_record(
-                    payload,
-                    combined_samples,
-                    realtime_pipeline,
-                )
-                SocketThread._publish_detect_epoch(
-                    mqtt_publisher,
-                    event,
-                    realtime_outputs,
-                    metrics,
-                    lock,
-                )
-                with lock:
-                    metrics["detect_processed"] += 1
-
-                current_time = time.time()
-                if current_time - last_plot_time >= config.PLOT_INTERVAL:
-                    last_plot_time = current_time
-                    dps_plot, spoofing_detected = UbloxChart.raw2ImageDps(
-                        combined_samples,
+                try:
+                    payload = event["payload"]
+                    (
+                        realtime_outputs,
                         skyplot_data_1,
+                        skyplot_data_2,
+                        spectrum_data_1,
+                        spectrum_data_2,
+                    ) = SocketThread._process_epoch_record(
+                        payload,
+                        combined_samples,
+                        realtime_pipeline,
                     )
-                    if dps_plot != "":
-                        skyplot_1 = UbloxChart.raw2ImageSkyplot(skyplot_data_1)
-                        skyplot_2 = UbloxChart.raw2ImageSkyplot(skyplot_data_2)
-                        spectrum_1 = UbloxChart.raw2ImageSpectrum(spectrum_data_1)
-                        spectrum_2 = UbloxChart.raw2ImageSpectrum(spectrum_data_2)
-                        cpu_load = psutil.cpu_percent(interval=None)
-                        socketio.emit(
-                            "update_image",
-                            {
-                                "skyplot1": "data:image/png;base64," + skyplot_1,
-                                "spectrum1": "data:image/png;base64," + spectrum_1,
-                                "skyplot2": "data:image/png;base64," + skyplot_2,
-                                "spectrum2": "data:image/png;base64," + spectrum_2,
-                                "cpu_load": cpu_load,
-                                "dps": "data:image/png;base64," + dps_plot,
-                                "spoofing": spoofing_detected,
-                                "realtime_outputs": realtime_outputs,
-                            },
+                    SocketThread._publish_detect_epoch(
+                        mqtt_publisher,
+                        event,
+                        realtime_outputs,
+                        metrics,
+                        lock,
+                    )
+                    with lock:
+                        metrics["detect_processed"] += 1
+
+                    current_time = time.time()
+                    if current_time - last_plot_time >= config.PLOT_INTERVAL:
+                        last_plot_time = current_time
+                        dps_plot, spoofing_detected = UbloxChart.raw2ImageDps(
+                            combined_samples,
+                            skyplot_data_1,
                         )
-            except Exception:
-                LOGGER.exception("detect_consumer_process_error")
+                        if dps_plot != "":
+                            skyplot_1 = UbloxChart.raw2ImageSkyplot(skyplot_data_1)
+                            skyplot_2 = UbloxChart.raw2ImageSkyplot(skyplot_data_2)
+                            spectrum_1 = UbloxChart.raw2ImageSpectrum(spectrum_data_1)
+                            spectrum_2 = UbloxChart.raw2ImageSpectrum(spectrum_data_2)
+                            cpu_load = psutil.cpu_percent(interval=None)
+                            socketio.emit(
+                                "update_image",
+                                {
+                                    "skyplot1": "data:image/png;base64," + skyplot_1,
+                                    "spectrum1": "data:image/png;base64," + spectrum_1,
+                                    "skyplot2": "data:image/png;base64," + skyplot_2,
+                                    "spectrum2": "data:image/png;base64," + spectrum_2,
+                                    "cpu_load": cpu_load,
+                                    "dps": "data:image/png;base64," + dps_plot,
+                                    "spoofing": spoofing_detected,
+                                    "realtime_outputs": realtime_outputs,
+                                },
+                            )
+                except Exception:
+                    LOGGER.exception("detect_consumer_process_error")
+        finally:
+            command_subscriber.stop()
+            state.pipeline_status["status"] = "stopped"
 
     @staticmethod
     def _build_queue_stats(

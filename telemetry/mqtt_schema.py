@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -101,6 +102,64 @@ def build_command_branch_message(
         (build_topic(topic_prefix, site_id, device_id, suffix), msg)
         for suffix, msg in commands
     ]
+
+
+def build_ack_message(
+    *,
+    topic_prefix: str,
+    site_id: str,
+    device_id: str,
+    acknowledged: list[str],
+    extra_data: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    now = utc_now_z()
+    data: dict[str, Any] = {"acknowledged": acknowledged}
+    if extra_data:
+        data["result"] = extra_data
+
+    message = {
+        "schema": "gnss.cmd.ack.v1",
+        "event_id": build_event_id(device_id, int(time.time() * 1000), "cmd_ack"),
+        "seq": int(time.time() * 1000),
+        "device_id": device_id,
+        "site_id": site_id,
+        "frontend": "ublox",
+        "source": "pipeline",
+        "event_time": now,
+        "ingest_time": now,
+        "data": data,
+    }
+    topic = build_topic(topic_prefix, site_id, device_id, "cmd/ack/v1")
+    return topic, message
+
+
+def build_ublox_command_message(
+    *,
+    command_type: str,
+    command_id: str,
+    site_id: str,
+    device_id: str,
+    params: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    now = utc_now_z()
+    message = {
+        "schema": f"gnss.cmd.ublox.{command_type}.v1",
+        "event_id": build_event_id(device_id, int(time.time() * 1000), f"cmd_{command_type}"),
+        "seq": int(time.time() * 1000),
+        "device_id": device_id,
+        "site_id": site_id,
+        "frontend": "ublox",
+        "source": "server",
+        "event_time": now,
+        "ingest_time": now,
+        "data": {
+            "command_id": command_id,
+            "command_type": command_type,
+            "params": params,
+        },
+    }
+    topic = build_topic(topic_prefix, site_id, device_id, f"cmd/ublox/{command_type}/v1")
+    return topic, message
 
 
 def build_envelope(
