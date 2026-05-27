@@ -80,3 +80,12 @@ class config:
     MQTT_KEEPALIVE_S = int(os.environ.get("MQTT_KEEPALIVE_S", 60))
     MQTT_PUBLISH_TIMEOUT_S = _env_float("MQTT_PUBLISH_TIMEOUT_S", 2.0)
     MQTT_POSITION_RETAIN = _env_bool("MQTT_POSITION_RETAIN", False)
+
+    # SDR Config (BladeRF)
+    SDR_DEVICE = os.environ.get("SDR_DEVICE", "libusb:device=6:3")
+    SDR_FREQ = _env_float("SDR_FREQ", 1575.42e6)  # GPS L1
+    SDR_SAMPLE_RATE = _env_float("SDR_SAMPLE_RATE", 5e6)  # 5 MHz
+    SDR_GAIN = _env_float("SDR_GAIN", 30)  # dB
+    SDR_BANDWIDTH = _env_float("SDR_BANDWIDTH", 2.5e6)  # Hz
+    SDR_NUM_SAMPLES = int(os.environ.get("SDR_NUM_SAMPLES", 8192))
+    SDR_ENABLED = _env_bool("SDR_ENABLED", True)

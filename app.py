@@ -8,6 +8,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 from thread.ReadSerialThread import ReadSerial
 from thread.SocketThread import SocketThread
+from thread.SDRThread import SDRThread
 from config import config
 # config
 
@@ -76,6 +77,11 @@ def about():
     return render_template("about.html")
 
 
+@app.route("/sdr")
+def sdr():
+    return render_template("sdr.html")
+
+
 @socketio.on('connect')
 def handle_connect():
     print("Client connected")
@@ -133,6 +139,13 @@ if __name__ == "__main__":
     )
     try:
         logging.debug("Starting Flask app...")
+
+        # Start SDR thread if enabled
+        if config.SDR_ENABLED:
+            sdr_thread = SDRThread.get_instance(socketio)
+            sdr_thread.start()
+            logging.info("SDR thread started")
+
         socketio.run(app, config.HOSTSOCKET, config.PORTSOCKET, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         logging.info("Shutting down...")

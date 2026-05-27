@@ -25,6 +25,30 @@
             margin: 0;
             text-align: center;
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+        }
+
+        h1 .page-title {
+            flex: 1;
+        }
+
+        .nav-btn {
+            background-color: rgba(255, 255, 255, 0.15);
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background-color 0.2s;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .nav-btn:hover {
+            background-color: rgba(255, 255, 255, 0.25);
         }
 
         .section {
@@ -275,7 +299,9 @@
 
 <body>
 
-    <h1>BKGSD - GNSS Spoofing Detection</h1>
+    <h1>BKGSD - GNSS Spoofing Detection
+        <a href="/sdr" class="nav-btn">SDR Viewer</a>
+    </h1>
 
     <!-- CPU Load -->
     <div class="section">

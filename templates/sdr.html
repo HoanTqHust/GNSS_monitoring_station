@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>SDR Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            background-color: #f4f7f9;
+            color: #333;
+        }
+
+        h1 {
+            background-color: #0066cc;
+            color: white;
+            padding: 15px 20px;
+            margin: 0;
+            text-align: center;
+            border-bottom: 1px solid #004c99;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+        }
+
+        h1 .page-title {
+            flex: 1;
+        }
+
+        .nav-btn {
+            background-color: rgba(255, 255, 255, 0.15);
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background-color 0.2s;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .nav-btn:hover {
+            background-color: rgba(255, 255, 255, 0.25);
+        }
+
+        .stats-bar {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            padding: 15px;
+            background-color: white;
+            border-bottom: 1px solid #e2e8f0;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            text-align: center;
+            padding: 0 20px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 16px;
+            color: #0066cc;
+            font-weight: bold;
+        }
+
+        #status {
+            position: fixed;
+            top: 15px;
+            right: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            background-color: white;
+            padding: 8px 12px;
+            border-radius: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            z-index: 100;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #f44336;
+        }
+
+        .dot.live {
+            background-color: #4caf50;
+        }
+
+        .charts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 30px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .chart-box {
+            background-color: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .chart-box h3 {
+            font-size: 14px;
+            color: #0066cc;
+            margin: 0 0 15px 0;
+            font-weight: 600;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        #error {
+            color: #f44336;
+            text-align: center;
+            padding: 10px;
+            font-size: 12px;
+        }
+
+        @media (max-width: 900px) {
+            .charts {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <h1>
+        <a href="/" class="nav-btn">GNSS Monitor</a>
+        <span class="page-title">BladeRF SDR Viewer</span>
+    </h1>
+
+    <div class="stats-bar">
+        <div class="stat">
+            <div class="stat-label">Frequency</div>
+            <div class="stat-value" id="freq">1575.42 MHz</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Sample Rate</div>
+            <div class="stat-value" id="sr">5.0 Msps</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Samples</div>
+            <div class="stat-value" id="samples">8192</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Peak</div>
+            <div class="stat-value" id="peak">0.000</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Mean</div>
+            <div class="stat-value" id="mean">0.000</div>
+        </div>
+    </div>
+
+    <div id="status">
+        <span class="dot" id="dot"></span>
+        <span id="statusText">Connecting...</span>
+    </div>
+
+    <div id="error"></div>
+
+    <div class="charts">
+        <div class="chart-box">
+            <h3>Amplitude (Time Domain)</h3>
+            <div class="chart-container">
+                <canvas id="timeChart"></canvas>
+            </div>
+        </div>
+        <div class="chart-box">
+            <h3>Constellation (IQ)</h3>
+            <div class="chart-container">
+                <canvas id="scatterChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        let timeChart, scatterChart;
+        const MAX_TIME_POINTS = 500;
+        const MAX_SCATTER_POINTS = 500;
+
+        function showError(msg) {
+            document.getElementById("error").textContent = msg;
+        }
+
+        function clearError() {
+            document.getElementById("error").textContent = "";
+        }
+
+        socket.on("connect", () => {
+            document.getElementById("statusText").textContent = "Connected";
+            document.getElementById("dot").classList.add("live");
+        });
+
+        socket.on("disconnect", () => {
+            document.getElementById("statusText").textContent = "Disconnected";
+            document.getElementById("dot").classList.remove("live");
+        });
+
+        socket.on("sdr_data", (data) => {
+            clearError();
+            document.getElementById("peak").textContent = data.peak ? data.peak.toFixed(4) : "0.000";
+            document.getElementById("mean").textContent = data.mean ? data.mean.toFixed(4) : "0.000";
+
+            // Update amplitude chart
+            if (data.amp && data.amp.length > 0) {
+                timeChart.data.datasets[0].data = data.amp.slice(0, MAX_TIME_POINTS);
+                timeChart.update("none");
+            }
+
+            // Update constellation
+            if (data.iq && data.iq.length > 0) {
+                const points = [];
+                for (let i = 0; i < Math.min(data.iq.length / 2, MAX_SCATTER_POINTS) * 2; i += 2) {
+                    points.push({ x: data.iq[i], y: data.iq[i + 1] });
+                }
+                scatterChart.data.datasets[0].data = points;
+                scatterChart.update("none");
+            }
+        });
+
+        function initCharts() {
+            // Amplitude chart
+            const timeCtx = document.getElementById("timeChart").getContext("2d");
+            timeChart = new Chart(timeCtx, {
+                type: "line",
+                data: {
+                    labels: Array.from({ length: MAX_TIME_POINTS }, (_, i) => i),
+                    datasets: [{
+                        label: "|IQ|",
+                        data: [],
+                        borderColor: "#0066cc",
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        fill: true,
+                        backgroundColor: "rgba(0, 102, 204, 0.1)"
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { min: 0, max: 0.5, grid: { color: "#e2e8f0" }, ticks: { color: "#666", font: { size: 10 } } }
+                    }
+                }
+            });
+
+            // Constellation chart
+            const scatterCtx = document.getElementById("scatterChart").getContext("2d");
+            scatterChart = new Chart(scatterCtx, {
+                type: "scatter",
+                data: {
+                    datasets: [{
+                        label: "IQ",
+                        data: [],
+                        backgroundColor: "rgba(0, 102, 204, 0.4)",
+                        pointRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: {
+                        x: { min: -0.3, max: 0.3, grid: { color: "#e2e8f0" }, ticks: { color: "#666", font: { size: 10 } } },
+                        y: { min: -0.3, max: 0.3, grid: { color: "#e2e8f0" }, ticks: { color: "#666", font: { size: 10 } } }
+                    }
+                }
+            });
+        }
+
+        window.addEventListener("load", initCharts);
+    </script>
+</body>
+
+</html>
