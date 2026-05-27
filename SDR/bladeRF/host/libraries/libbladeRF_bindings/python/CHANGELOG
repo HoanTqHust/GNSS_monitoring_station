@@ -1,0 +1,63 @@
+================================================================================
+Python libbladeRF Bindings: Change Log Summary
+
+For more detailed information, please see the git change log and issue tracker
+hosted on GitHub: https://github.com/nuand/bladeRF
+================================================================================
+
+v1.4.0 (2025-05-06)
+--------------------------------
+ * add support for SC16_Q11_META format
+ * update Python binding definitions
+
+v1.3.0 (2023-02-13)
+--------------------------------
+ * add special case for loading Windows DLL in Python bindings
+ * update Python bindings definitions
+
+v1.2.1 (2021-10-04)
+--------------------------------
+ * add bladeRF 2.0 micro xA5 support
+ * fix get_gain_modes and get_*_range functions
+ * fix Python binding compatibility issue on macOS
+
+v1.2.0 (2019-07-31)
+--------------------------------
+ * add OTP functions
+ * update FPGA flash type definitions
+
+v1.1.2 (2020-12-23)
+--------------------------------
+ * update definitions for libbladeRF v2.4.0
+
+v1.1.1 (2019-07-31)
+--------------------------------
+ * add OTP functions
+ * update definitions for libbladeRF v2.2.1
+
+v1.1.1 (2018-12-21)
+--------------------------------
+ * bladerf-tool: don't print gain mode on tx channels
+ * update definitions for libbladeRF v2.2.0
+
+v1.1.0 (2018-10-30)
+--------------------------------
+ * Fix rx_channel_count and tx_channel_count
+ * Use new bladerf_get_serial_struct in the get_serial method
+ * Update with latest API functions
+ * Improve import_header.py script
+
+v1.0.1 (2018-08-24)
+--------------------------------
+
+This version is intended for use with libbladeRF v2.0.1.
+
+Changes:
+ * host: libbladeRF: Rename clock select option
+
+v1.0.0 (2018-08-13)
+--------------------------------
+
+This version is intended for use with libbladeRF v2.0.0.
+
+Initial public release.

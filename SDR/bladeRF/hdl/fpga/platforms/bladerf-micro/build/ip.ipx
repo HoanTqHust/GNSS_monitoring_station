@@ -1,0 +1,11 @@
+<library>
+        <path path="../../../fpga/ip/opencores/i2c/**/*"/>
+        <path path="../../../fpga/ip/nuand/time_tamer/**/*"/>
+        <path path="../../../fpga/ip/nuand/wishbone_master/**/*"/>
+        <path path="../../../fpga/ip/nuand/command_uart/**/*"/>
+        <path path="../../../fpga/ip/nuand/vctcxo_tamer/**/*"/>
+        <path path="../../../fpga/ip/nuand/tone_generator/**/*"/>
+        <path path="../../../fpga/ip/nuand/arbiter/**/*"/>
+        <path path="../../../fpga/ip/nuand/rfic_spi_controller/**/*"/>
+        <path path="../../../fpga/ip/analogdevicesinc/**/*"/>
+</library>
