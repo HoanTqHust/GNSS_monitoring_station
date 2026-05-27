@@ -12,8 +12,8 @@ if os.path.exists(LIBBLADERF_PATH):
 class BladeRFSdr:
     """BladeRF SDR wrapper — manages device init, RX/TX channels, and sync config."""
 
-    def __init__(self):
-        self.sdr = _bladerf.BladeRF()
+    def __init__(self, device_string="libusb:device=6:3"):
+        self.sdr = _bladerf.BladeRF(device_string)
         self.rx_ch = self.sdr.Channel(_bladerf.CHANNEL_RX(0))
         self.tx_ch = self.sdr.Channel(_bladerf.CHANNEL_TX(0))
         self._rx_enabled = False

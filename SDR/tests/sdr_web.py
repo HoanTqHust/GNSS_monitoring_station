@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime
 from threading import Thread
 
-sys.path.insert(0, "/home/ubuntu/sdr")
+sys.path.insert(0, "/home/firefly/double_difference_cp/SDR")
 from src import BladeRFSdr, Receiver
 from flask import Flask, render_template_string
 
