@@ -115,12 +115,19 @@
             padding: 20px;
         }
 
+        .content-grid {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 20px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
         .spectrogram-box {
             background: linear-gradient(145deg, #1a1a2e, #0f0f1a);
             border: 2px solid #2a2a4a;
             border-radius: 12px;
             padding: 15px;
-            margin-bottom: 20px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
         }
 
@@ -134,8 +141,7 @@
         #spectrogram-container {
             background-color: #000;
             border-radius: 8px;
-            min-width: 800px;
-            min-height: 500px;
+            min-height: 480px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -151,10 +157,123 @@
             font-size: 14px;
         }
 
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .detection-box {
+            background: linear-gradient(145deg, #1a1a2e, #0f0f1a);
+            border: 2px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .detection-box h3 {
+            color: #00d4ff;
+            margin: 0 0 15px 0;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .state-display {
+            text-align: center;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .state-label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .state-value {
+            font-size: 28px;
+            font-weight: bold;
+            text-shadow: 0 0 10px currentColor;
+        }
+
+        .state-value.clean { color: #4caf50; }
+        .state-value.narrowband { color: #ff9800; }
+        .state-value.pulsed { color: #f44336; }
+        .state-value.swept { color: #e91e63; }
+        .state-value.multi-tone { color: #9c27b0; }
+        .state-value.partial-band { color: #ff5722; }
+        .state-value.unknown { color: #888; }
+
+        .confidence-bar {
+            height: 8px;
+            background: #2a2a4a;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .confidence-text {
+            text-align: right;
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+        }
+
+        .probs-box {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 10px;
+        }
+
+        .prob-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+            font-size: 12px;
+        }
+
+        .prob-label {
+            color: #aaa;
+        }
+
+        .prob-bar-container {
+            flex: 1;
+            margin: 0 10px;
+            height: 6px;
+            background: #2a2a4a;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .prob-bar {
+            height: 100%;
+            background: #00d4ff;
+            border-radius: 3px;
+        }
+
+        .prob-value {
+            color: #888;
+            min-width: 40px;
+            text-align: right;
+        }
+
         .controls {
             display: flex;
             gap: 15px;
             margin-top: 15px;
+            justify-content: center;
         }
 
         .btn {
@@ -192,8 +311,8 @@
         }
 
         @media (max-width: 900px) {
-            #spectrogram-container {
-                min-width: 100%;
+            .content-grid {
+                grid-template-columns: 1fr;
             }
         }
     </style>
@@ -234,15 +353,63 @@
     </div>
 
     <div class="main-container">
-        <div class="spectrogram-box">
-            <h3>Real-time Spectrogram (Waterfall)</h3>
-            <div id="spectrogram-container">
-                <span id="no-image">Chờ dữ liệu spectrogram...</span>
-                <img id="spectrogram" style="display: none;" alt="Spectrogram">
+        <div class="content-grid">
+            <div class="spectrogram-box">
+                <h3>Real-time Spectrogram (Waterfall)</h3>
+                <div id="spectrogram-container">
+                    <span id="no-image">Chờ dữ liệu spectrogram...</span>
+                    <img id="spectrogram" style="display: none;" alt="Spectrogram">
+                </div>
+                <div class="controls">
+                    <button class="btn" onclick="refreshImage()">Refresh</button>
+                    <button class="btn danger" onclick="stopAcquisition()">Stop</button>
+                </div>
             </div>
-            <div class="controls">
-                <button class="btn" onclick="refreshImage()">Refresh</button>
-                <button class="btn danger" onclick="stopAcquisition()">Stop</button>
+
+            <div class="sidebar">
+                <div class="detection-box">
+                    <h3>Jamming Detection</h3>
+                    <div class="state-display">
+                        <div class="state-label">Signal State</div>
+                        <div class="state-value unknown" id="stateValue">--</div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" id="confidenceFill" style="width: 0%"></div>
+                        </div>
+                        <div class="confidence-text" id="confidenceText">0%</div>
+                    </div>
+                    <div class="probs-box">
+                        <div class="prob-row">
+                            <span class="prob-label">Clean</span>
+                            <div class="prob-bar-container"><div class="prob-bar" id="prob-clean" style="width:0%"></div></div>
+                            <span class="prob-value" id="val-clean">0%</span>
+                        </div>
+                        <div class="prob-row">
+                            <span class="prob-label">Narrowband</span>
+                            <div class="prob-bar-container"><div class="prob-bar" id="prob-narrowband" style="width:0%"></div></div>
+                            <span class="prob-value" id="val-narrowband">0%</span>
+                        </div>
+                        <div class="prob-row">
+                            <span class="prob-label">Pulsed</span>
+                            <div class="prob-bar-container"><div class="prob-bar" id="prob-pulsed" style="width:0%"></div></div>
+                            <span class="prob-value" id="val-pulsed">0%</span>
+                        </div>
+                        <div class="prob-row">
+                            <span class="prob-label">Swept</span>
+                            <div class="prob-bar-container"><div class="prob-bar" id="prob-swept" style="width:0%"></div></div>
+                            <span class="prob-value" id="val-swept">0%</span>
+                        </div>
+                        <div class="prob-row">
+                            <span class="prob-label">Multi-tone</span>
+                            <div class="prob-bar-container"><div class="prob-bar" id="prob-multi-tone" style="width:0%"></div></div>
+                            <span class="prob-value" id="val-multi-tone">0%</span>
+                        </div>
+                        <div class="prob-row">
+                            <span class="prob-label">Partial-band</span>
+                            <div class="prob-bar-container"><div class="prob-bar" id="prob-partial-band" style="width:0%"></div></div>
+                            <span class="prob-value" id="val-partial-band">0%</span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -257,6 +424,8 @@
         let lastFpsUpdate = Date.now();
         let fps = 0;
         let imgLoading = false;
+
+        const CLASS_NAMES = ["Clean", "Narrowband", "Pulsed", "Swept", "Multi-tone", "Partial-band"];
 
         function showError(msg) {
             document.getElementById("info").textContent = msg;
@@ -289,6 +458,17 @@
             }
         });
 
+        socket.on("sdr_classify", (data) => {
+            clearError();
+            updateDetection(data);
+            if (data.fps !== undefined) {
+                document.getElementById("fps").textContent = data.fps.toFixed(2);
+            }
+            if (data.frames !== undefined) {
+                document.getElementById("frames").textContent = data.frames;
+            }
+        });
+
         socket.on("sdr_stopped", () => {
             document.getElementById("statusText").textContent = "Stopped";
             document.getElementById("dot").classList.remove("live");
@@ -307,6 +487,32 @@
             }
         }
 
+        function updateDetection(data) {
+            const stateEl = document.getElementById("stateValue");
+            const confFill = document.getElementById("confidenceFill");
+            const confText = document.getElementById("confidenceText");
+
+            const state = data.class || "Unknown";
+            const confidence = data.confidence || 0;
+
+            stateEl.textContent = state;
+            stateEl.className = "state-value " + state.toLowerCase().replace(" ", "-");
+
+            confFill.style.width = (confidence * 100) + "%";
+            confText.textContent = (confidence * 100).toFixed(1) + "%";
+
+            if (data.probs && data.probs.length === 6) {
+                for (let i = 0; i < 6; i++) {
+                    const pct = (data.probs[i] * 100).toFixed(1);
+                    const key = CLASS_NAMES[i].toLowerCase().replace(" ", "-");
+                    const bar = document.getElementById("prob-" + key);
+                    const val = document.getElementById("val-" + key);
+                    if (bar) bar.style.width = pct + "%";
+                    if (val) val.textContent = pct + "%";
+                }
+            }
+        }
+
         function updateSpectrogram(filename) {
             const img = document.getElementById("spectrogram");
             const noImage = document.getElementById("no-image");
@@ -321,14 +527,10 @@
                 imgLoading = false;
             };
 
-            // Use /sdr/bmp/<basename> endpoint
             const basename = filename.split("/").pop();
             img.src = "/sdr/bmp/" + basename + "?t=" + Date.now();
 
             document.getElementById("info").textContent = "Showing: " + basename;
-            lastFilename = filename;
-
-            document.getElementById("info").textContent = "Showing: " + filename.split("/").pop();
             lastFilename = filename;
 
             frameCount++;
@@ -342,7 +544,7 @@
         }
 
         function refreshImage() {
-            if (imgLoading) return; // Skip if image is still loading
+            if (imgLoading) return;
             fetch("/sdr/latest_bmp")
                 .then(res => res.json())
                 .then(data => {
