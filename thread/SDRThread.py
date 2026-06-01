@@ -154,10 +154,8 @@ def preprocess_image(img: Image.Image) -> torch.Tensor:
     img = img.resize((224, 224), Image.BILINEAR)
     arr = np.array(img).astype(np.float32) / 255.0
     arr = arr.transpose(2, 0, 1)
-    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
-    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
-    arr = (arr - mean) / std
-    return torch.from_numpy(arr).unsqueeze(0)
+    # Model was trained on raw 0-1 BMP pixels, no ImageNet normalization
+    return torch.from_numpy(arr).unsqueeze(0).float()
 
 
 def predict_image(model, img: Image.Image):
