@@ -3,24 +3,27 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>SDR Viewer</title>
+    <title>SDR Spectrogram Viewer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
-            background-color: #f4f7f9;
-            color: #333;
+            background-color: #0a0a0f;
+            color: #e0e0e0;
         }
 
         h1 {
-            background-color: #0066cc;
-            color: white;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #00d4ff;
             padding: 15px 20px;
             margin: 0;
             text-align: center;
-            border-bottom: 1px solid #004c99;
+            border-bottom: 2px solid #00d4ff;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -29,22 +32,24 @@
 
         h1 .page-title {
             flex: 1;
+            text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
         }
 
         .nav-btn {
-            background-color: rgba(255, 255, 255, 0.15);
-            color: white;
+            background-color: rgba(0, 212, 255, 0.15);
+            color: #00d4ff;
             padding: 8px 20px;
             border-radius: 20px;
             text-decoration: none;
             font-size: 14px;
             font-weight: 600;
-            transition: background-color 0.2s;
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s ease;
+            border: 1px solid rgba(0, 212, 255, 0.4);
         }
 
         .nav-btn:hover {
-            background-color: rgba(255, 255, 255, 0.25);
+            background-color: rgba(0, 212, 255, 0.3);
+            box-shadow: 0 0 15px rgba(0, 212, 255, 0.3);
         }
 
         .stats-bar {
@@ -52,8 +57,8 @@
             justify-content: center;
             gap: 30px;
             padding: 15px;
-            background-color: white;
-            border-bottom: 1px solid #e2e8f0;
+            background-color: #1a1a2e;
+            border-bottom: 1px solid #2a2a4a;
             flex-wrap: wrap;
         }
 
@@ -64,15 +69,16 @@
 
         .stat-label {
             font-size: 11px;
-            color: #666;
+            color: #888;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
 
         .stat-value {
             font-size: 16px;
-            color: #0066cc;
+            color: #00d4ff;
             font-weight: bold;
+            text-shadow: 0 0 5px rgba(0, 212, 255, 0.3);
         }
 
         #status {
@@ -83,10 +89,10 @@
             align-items: center;
             gap: 8px;
             font-size: 12px;
-            background-color: white;
+            background-color: #1a1a2e;
             padding: 8px 12px;
             border-radius: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border: 1px solid #2a2a4a;
             z-index: 100;
         }
 
@@ -99,46 +105,95 @@
 
         .dot.live {
             background-color: #4caf50;
+            box-shadow: 0 0 8px rgba(76, 175, 80, 0.6);
         }
 
-        .charts {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            padding: 30px;
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        .chart-box {
-            background-color: white;
-            border-radius: 12px;
+        .main-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
             padding: 20px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
         }
 
-        .chart-box h3 {
+        .spectrogram-box {
+            background: linear-gradient(145deg, #1a1a2e, #0f0f1a);
+            border: 2px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .spectrogram-box h3 {
+            color: #00d4ff;
+            margin: 0 0 10px 0;
             font-size: 14px;
-            color: #0066cc;
-            margin: 0 0 15px 0;
+            text-align: center;
+        }
+
+        #spectrogram-container {
+            background-color: #000;
+            border-radius: 8px;
+            min-width: 800px;
+            min-height: 500px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #spectrogram {
+            max-width: 100%;
+            border-radius: 4px;
+        }
+
+        #no-image {
+            color: #555;
+            font-size: 14px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            color: #00d4ff;
+            border: 1px solid #00d4ff;
+            padding: 8px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 12px;
             font-weight: 600;
+            transition: all 0.3s ease;
         }
 
-        .chart-container {
-            position: relative;
-            height: 300px;
+        .btn:hover {
+            background: rgba(0, 212, 255, 0.2);
+            box-shadow: 0 0 15px rgba(0, 212, 255, 0.3);
         }
 
-        #error {
+        .btn.danger {
+            border-color: #f44336;
             color: #f44336;
+        }
+
+        .btn.danger:hover {
+            background: rgba(244, 67, 54, 0.2);
+            box-shadow: 0 0 15px rgba(244, 67, 54, 0.3);
+        }
+
+        #info {
             text-align: center;
             padding: 10px;
+            color: #888;
             font-size: 12px;
         }
 
         @media (max-width: 900px) {
-            .charts {
-                grid-template-columns: 1fr;
+            #spectrogram-container {
+                min-width: 100%;
             }
         }
     </style>
@@ -147,7 +202,7 @@
 <body>
     <h1>
         <a href="/" class="nav-btn">GNSS Monitor</a>
-        <span class="page-title">BladeRF SDR Viewer</span>
+        <span class="page-title">BladeRF Realtime Spectrogram</span>
     </h1>
 
     <div class="stats-bar">
@@ -157,19 +212,19 @@
         </div>
         <div class="stat">
             <div class="stat-label">Sample Rate</div>
-            <div class="stat-value" id="sr">5.0 Msps</div>
+            <div class="stat-value" id="sr">60.0 Msps</div>
         </div>
         <div class="stat">
-            <div class="stat-label">Samples</div>
-            <div class="stat-value" id="samples">8192</div>
+            <div class="stat-label">Gain</div>
+            <div class="stat-value" id="gain">20</div>
         </div>
         <div class="stat">
-            <div class="stat-label">Peak</div>
-            <div class="stat-value" id="peak">0.000</div>
+            <div class="stat-label">FPS</div>
+            <div class="stat-value" id="fps">0.00</div>
         </div>
         <div class="stat">
-            <div class="stat-label">Mean</div>
-            <div class="stat-value" id="mean">0.000</div>
+            <div class="stat-label">Frames Saved</div>
+            <div class="stat-value" id="frames">0</div>
         </div>
     </div>
 
@@ -178,125 +233,133 @@
         <span id="statusText">Connecting...</span>
     </div>
 
-    <div id="error"></div>
+    <div class="main-container">
+        <div class="spectrogram-box">
+            <h3>Real-time Spectrogram (Waterfall)</h3>
+            <div id="spectrogram-container">
+                <span id="no-image">Chờ dữ liệu spectrogram...</span>
+                <img id="spectrogram" style="display: none;" alt="Spectrogram">
+            </div>
+            <div class="controls">
+                <button class="btn" onclick="refreshImage()">Refresh</button>
+                <button class="btn danger" onclick="stopAcquisition()">Stop</button>
+            </div>
+        </div>
 
-    <div class="charts">
-        <div class="chart-box">
-            <h3>Amplitude (Time Domain)</h3>
-            <div class="chart-container">
-                <canvas id="timeChart"></canvas>
-            </div>
-        </div>
-        <div class="chart-box">
-            <h3>Constellation (IQ)</h3>
-            <div class="chart-container">
-                <canvas id="scatterChart"></canvas>
-            </div>
-        </div>
+        <div id="info"></div>
     </div>
 
     <script>
         const socket = io();
-
-        let timeChart, scatterChart;
-        const MAX_TIME_POINTS = 500;
-        const MAX_SCATTER_POINTS = 500;
+        let lastFilename = null;
+        let refreshTimer = null;
+        let frameCount = 0;
+        let lastFpsUpdate = Date.now();
+        let fps = 0;
+        let imgLoading = false;
 
         function showError(msg) {
-            document.getElementById("error").textContent = msg;
+            document.getElementById("info").textContent = msg;
+            document.getElementById("info").style.color = "#f44336";
         }
 
         function clearError() {
-            document.getElementById("error").textContent = "";
+            document.getElementById("info").textContent = "";
         }
 
         socket.on("connect", () => {
             document.getElementById("statusText").textContent = "Connected";
             document.getElementById("dot").classList.add("live");
+            startRefreshTimer();
         });
 
         socket.on("disconnect", () => {
             document.getElementById("statusText").textContent = "Disconnected";
             document.getElementById("dot").classList.remove("live");
+            stopRefreshTimer();
         });
 
         socket.on("sdr_data", (data) => {
             clearError();
-            document.getElementById("peak").textContent = data.peak ? data.peak.toFixed(4) : "0.000";
-            document.getElementById("mean").textContent = data.mean ? data.mean.toFixed(4) : "0.000";
-
-            // Update amplitude chart
-            if (data.amp && data.amp.length > 0) {
-                timeChart.data.datasets[0].data = data.amp.slice(0, MAX_TIME_POINTS);
-                timeChart.update("none");
+            if (data.fps !== undefined) {
+                document.getElementById("fps").textContent = data.fps.toFixed(2);
             }
-
-            // Update constellation
-            if (data.iq && data.iq.length > 0) {
-                const points = [];
-                for (let i = 0; i < Math.min(data.iq.length / 2, MAX_SCATTER_POINTS) * 2; i += 2) {
-                    points.push({ x: data.iq[i], y: data.iq[i + 1] });
-                }
-                scatterChart.data.datasets[0].data = points;
-                scatterChart.update("none");
+            if (data.frames !== undefined) {
+                document.getElementById("frames").textContent = data.frames;
             }
         });
 
-        function initCharts() {
-            // Amplitude chart
-            const timeCtx = document.getElementById("timeChart").getContext("2d");
-            timeChart = new Chart(timeCtx, {
-                type: "line",
-                data: {
-                    labels: Array.from({ length: MAX_TIME_POINTS }, (_, i) => i),
-                    datasets: [{
-                        label: "|IQ|",
-                        data: [],
-                        borderColor: "#0066cc",
-                        borderWidth: 1.5,
-                        pointRadius: 0,
-                        fill: true,
-                        backgroundColor: "rgba(0, 102, 204, 0.1)"
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: false,
-                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                    scales: {
-                        x: { display: false },
-                        y: { min: 0, max: 0.5, grid: { color: "#e2e8f0" }, ticks: { color: "#666", font: { size: 10 } } }
-                    }
-                }
-            });
+        socket.on("sdr_stopped", () => {
+            document.getElementById("statusText").textContent = "Stopped";
+            document.getElementById("dot").classList.remove("live");
+            stopRefreshTimer();
+        });
 
-            // Constellation chart
-            const scatterCtx = document.getElementById("scatterChart").getContext("2d");
-            scatterChart = new Chart(scatterCtx, {
-                type: "scatter",
-                data: {
-                    datasets: [{
-                        label: "IQ",
-                        data: [],
-                        backgroundColor: "rgba(0, 102, 204, 0.4)",
-                        pointRadius: 2
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: false,
-                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                    scales: {
-                        x: { min: -0.3, max: 0.3, grid: { color: "#e2e8f0" }, ticks: { color: "#666", font: { size: 10 } } },
-                        y: { min: -0.3, max: 0.3, grid: { color: "#e2e8f0" }, ticks: { color: "#666", font: { size: 10 } } }
-                    }
-                }
-            });
+        function startRefreshTimer() {
+            if (refreshTimer) return;
+            refreshTimer = setInterval(refreshImage, 500);
         }
 
-        window.addEventListener("load", initCharts);
+        function stopRefreshTimer() {
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+        }
+
+        function updateSpectrogram(filename) {
+            const img = document.getElementById("spectrogram");
+            const noImage = document.getElementById("no-image");
+
+            imgLoading = true;
+            img.onload = () => {
+                imgLoading = false;
+                noImage.style.display = "none";
+                img.style.display = "block";
+            };
+            img.onerror = () => {
+                imgLoading = false;
+            };
+
+            // Use /sdr/bmp/<basename> endpoint
+            const basename = filename.split("/").pop();
+            img.src = "/sdr/bmp/" + basename + "?t=" + Date.now();
+
+            document.getElementById("info").textContent = "Showing: " + basename;
+            lastFilename = filename;
+
+            document.getElementById("info").textContent = "Showing: " + filename.split("/").pop();
+            lastFilename = filename;
+
+            frameCount++;
+            const now = Date.now();
+            if (now - lastFpsUpdate >= 1000) {
+                fps = frameCount / ((now - lastFpsUpdate) / 1000);
+                document.getElementById("fps").textContent = fps.toFixed(2);
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+        }
+
+        function refreshImage() {
+            if (imgLoading) return; // Skip if image is still loading
+            fetch("/sdr/latest_bmp")
+                .then(res => res.json())
+                .then(data => {
+                    if (data.filename && data.filename !== lastFilename) {
+                        updateSpectrogram(data.filename);
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function stopAcquisition() {
+            fetch("/sdr/stop", { method: "POST" })
+                .then(() => {
+                    document.getElementById("statusText").textContent = "Stopping...";
+                })
+                .catch(() => {});
+        }
     </script>
 </body>
 

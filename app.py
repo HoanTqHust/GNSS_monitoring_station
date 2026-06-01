@@ -3,7 +3,7 @@ import os
 from multiprocessing import Process
 from multiprocessing import Queue as MpQueue
 from queue import Queue as ThreadQueue
-from flask import Flask, render_template
+from flask import Flask, render_template, jsonify, request, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from thread.ReadSerialThread import ReadSerial
@@ -80,6 +80,39 @@ def about():
 @app.route("/sdr")
 def sdr():
     return render_template("sdr.html")
+
+
+@app.route("/sdr/latest_bmp")
+def sdr_latest_bmp():
+    bmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BKDATASET")
+    if not os.path.isdir(bmp_dir):
+        return jsonify({"filename": None})
+    files = [os.path.join(bmp_dir, f) for f in os.listdir(bmp_dir) if f.lower().endswith(".bmp")]
+    if not files:
+        return jsonify({"filename": None})
+    latest = max(files, key=os.path.getmtime)
+    return jsonify({"filename": latest})
+
+
+@app.route("/sdr/bmp/<path:filename>")
+def sdr_serve_bmp(filename):
+    """Serve BMP file from BKDATASET directory"""
+    bmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BKDATASET")
+    # Security: only allow files within BKDATASET
+    if ".." in filename or not filename.endswith(".bmp"):
+        return "Invalid file", 400
+    full_path = os.path.join(bmp_dir, os.path.basename(filename))
+    if not os.path.exists(full_path):
+        return "Not found", 404
+    return send_file(full_path, mimetype="image/bmp")
+
+
+@app.route("/sdr/stop", methods=["POST"])
+def sdr_stop():
+    sdr_thread = SDRThread.get_instance(socketio)
+    sdr_thread.stop()
+    socketio.emit("sdr_stopped")
+    return jsonify({"status": "stopped"})
 
 
 @socketio.on('connect')
