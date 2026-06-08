@@ -6,12 +6,20 @@ Classifier: gnss_jamming_classifier_mps.pth (6 classes)
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
+import json
 import logging
+import math
 import os
+import queue as queue_module
 import time
 import threading
 import multiprocessing as mp
-from datetime import datetime
+import uuid
+from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -28,6 +36,11 @@ sys.path.insert(0, "/home/firefly/double_difference_cp/SDR")
 from src import BladeRFSdr, Receiver
 
 from config import config
+from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
+from telemetry.mqtt_schema import (
+    build_detect_sdr_message,
+    build_raw_sdr_snapshot_chunk_message,
+)
 
 LOGGER = logging.getLogger("thread.sdr_thread")
 
@@ -209,6 +222,73 @@ def render_bmp(power_db: np.ndarray):
     return Image.fromarray(rgb, mode="RGB").resize((IMG_W, IMG_H), Image.BILINEAR)
 
 
+def _utc_now_z() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _is_jamming_state(state: str, confidence: float) -> bool:
+    if state in {"Clean", "Unknown"}:
+        return False
+    return confidence >= config.SDR_JAMMING_CONFIDENCE_THRESHOLD
+
+
+def _encode_png_base64(img: Image.Image) -> str:
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _estimate_ring_frames() -> int:
+    frame_interval_s = max(THROTTLE_S, 0.001)
+    pre_frames = math.ceil(max(0.0, config.SDR_SNAPSHOT_PRE_SECONDS) / frame_interval_s)
+    return max(1, pre_frames + 2)
+
+
+def _snapshot_metadata_base(file_id: str, detection: dict[str, Any], frames: list[dict[str, Any]]) -> dict[str, Any]:
+    raw_bytes = b"".join(frame["raw_bytes"] for frame in frames)
+    sample_count = len(raw_bytes) // 4
+    file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    return {
+        "file_id": file_id,
+        "receiver": "sdr0",
+        "sample_format": "sc16_q11",
+        "center_freq_hz": int(CENTER_FREQ),
+        "sample_rate_hz": int(SAMPLE_RATE),
+        "gain_db": float(GAIN),
+        "bandwidth_hz": int(SAMPLE_RATE / 2),
+        "band": "L1",
+        "requested_pre_seconds": float(config.SDR_SNAPSHOT_PRE_SECONDS),
+        "requested_post_seconds": float(config.SDR_SNAPSHOT_POST_SECONDS),
+        "frame_count": len(frames),
+        "sample_count": sample_count,
+        "file_bytes": len(raw_bytes),
+        "file_sha256": file_sha256,
+        "first_frame_utc": frames[0]["captured_at_utc"] if frames else None,
+        "last_frame_utc": frames[-1]["captured_at_utc"] if frames else None,
+        **detection,
+    }
+
+
+def _save_sdr_snapshot(
+    *,
+    file_id: str,
+    detection: dict[str, Any],
+    frames: list[dict[str, Any]],
+) -> dict[str, Any]:
+    os.makedirs(config.SDR_SNAPSHOT_DIR, exist_ok=True)
+    raw_bytes = b"".join(frame["raw_bytes"] for frame in frames)
+    metadata = _snapshot_metadata_base(file_id, detection, frames)
+    bin_path = os.path.join(config.SDR_SNAPSHOT_DIR, f"{file_id}.bin")
+    json_path = os.path.join(config.SDR_SNAPSHOT_DIR, f"{file_id}.json")
+    with open(bin_path, "wb") as bin_file:
+        bin_file.write(raw_bytes)
+    metadata["bin_path"] = bin_path
+    metadata["metadata_path"] = json_path
+    with open(json_path, "w", encoding="utf-8") as json_file:
+        json.dump(metadata, json_file, ensure_ascii=False, sort_keys=True, indent=2)
+    return metadata
+
+
 # ══════════════════════════════════════════════
 # PROCESS A — reader
 # ══════════════════════════════════════════════
@@ -227,25 +307,34 @@ def reader_process(queue: mp.Queue, stop_event: mp.Event):
 
     last_push_t = 0.0
     chunks = []
+    raw_chunks = []
 
     print(f"[reader] started — push mỗi {THROTTLE_S*1000:.0f} ms")
 
     try:
         while not stop_event.is_set():
-            raw_samples = rx.receive(BUFFER_SIZE)
+            raw_samples, raw_bytes = rx.receive_with_raw(BUFFER_SIZE)
             iq = raw_samples.astype(np.complex64)
 
             chunks.append(iq)
+            raw_chunks.append(raw_bytes)
             if len(chunks) > NUM_BUFFERS:
                 chunks.pop(0)
+            if len(raw_chunks) > NUM_BUFFERS:
+                raw_chunks.pop(0)
 
             now = time.monotonic()
             if now - last_push_t >= THROTTLE_S and len(chunks) == NUM_BUFFERS:
                 frame = np.concatenate(chunks).astype(np.complex64)
+                raw_frame = b"".join(raw_chunks)
                 try:
-                    queue.put_nowait(frame)
+                    queue.put_nowait({
+                        "samples": frame,
+                        "raw_bytes": raw_frame,
+                        "captured_at_utc": _utc_now_z(),
+                    })
                 except Exception:
-                    pass
+                    LOGGER.warning("sdr_reader_queue_drop")
                 last_push_t = now
 
     except Exception as e:
@@ -272,16 +361,35 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
     frame_idx = 0
     t0 = time.time()
     cnt = 0
+    raw_ring = deque(maxlen=_estimate_ring_frames())
+    pending_snapshot: dict[str, Any] | None = None
+    next_snapshot_allowed_at = 0.0
 
     print(f"[plotter] saving -> {OUTPUT_DIR}")
 
     while not stop_event.is_set():
         try:
-            x = queue.get(timeout=2.0)
+            item = queue.get(timeout=2.0)
         except Exception:
             continue
 
         try:
+            if isinstance(item, dict):
+                x = item["samples"]
+                raw_bytes = item.get("raw_bytes", b"")
+                captured_at_utc = item.get("captured_at_utc") or _utc_now_z()
+            else:
+                x = item
+                raw_bytes = b""
+                captured_at_utc = _utc_now_z()
+
+            raw_record = {
+                "frame_idx": frame_idx,
+                "captured_at_utc": captured_at_utc,
+                "raw_bytes": raw_bytes,
+            }
+            raw_ring.append(raw_record)
+
             power_db = compute_spectrogram(x)
             img = render_bmp(power_db)
 
@@ -299,18 +407,78 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
                 except Exception as e:
                     print(f"[classifier] inference error: {e}")
 
+            detected_at_utc = _utc_now_z()
+            mqtt_event = None
+            created_pending = False
+            if (
+                raw_bytes
+                and pending_snapshot is None
+                and time.monotonic() >= next_snapshot_allowed_at
+                and _is_jamming_state(state, confidence)
+            ):
+                file_id = f"sdr-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+                detection = {
+                    "jamming": True,
+                    "class": state,
+                    "confidence": confidence,
+                    "probs": probs.tolist() if probs is not None else None,
+                    "class_names": list(CLASS_NAMES),
+                    "frame_idx": frame_idx,
+                    "detected_at_utc": detected_at_utc,
+                    "created_at_utc": detected_at_utc,
+                    "spectrum_image_base64": _encode_png_base64(img),
+                    "image_encoding": "png_base64",
+                }
+                pending_snapshot = {
+                    "file_id": file_id,
+                    "detection": detection,
+                    "frames": list(raw_ring),
+                    "post_until_monotonic": time.monotonic() + max(0.0, config.SDR_SNAPSHOT_POST_SECONDS),
+                }
+                created_pending = True
+                print(f"[snapshot] started file_id={file_id} class={state} confidence={confidence:.3f}")
+            elif pending_snapshot is not None and raw_bytes:
+                pending_snapshot["frames"].append(raw_record)
+
+            if pending_snapshot is not None:
+                should_finalize = time.monotonic() >= pending_snapshot["post_until_monotonic"]
+                if should_finalize and (not created_pending or config.SDR_SNAPSHOT_POST_SECONDS <= 0):
+                    snapshot = _save_sdr_snapshot(
+                        file_id=pending_snapshot["file_id"],
+                        detection=pending_snapshot["detection"],
+                        frames=pending_snapshot["frames"],
+                    )
+                    mqtt_payload = {**pending_snapshot["detection"], **snapshot}
+                    chunk_count = max(1, math.ceil(snapshot["file_bytes"] / max(1, config.SDR_MQTT_CHUNK_BYTES)))
+                    mqtt_payload["chunk_count"] = chunk_count
+                    mqtt_event = {
+                        "type": "sdr_threat_snapshot",
+                        "seq": int(pending_snapshot["detection"]["frame_idx"]),
+                        "created_at_utc": _utc_now_z(),
+                        "payload": mqtt_payload,
+                    }
+                    next_snapshot_allowed_at = time.monotonic() + max(0.0, config.SDR_SNAPSHOT_COOLDOWN_SECONDS)
+                    print(
+                        "[snapshot] saved "
+                        f"file_id={snapshot['file_id']} bytes={snapshot['file_bytes']} chunks={chunk_count}"
+                    )
+                    pending_snapshot = None
+
             # Put result for main thread to emit via socketio
             if result_queue is not None:
                 try:
-                    result_queue.put_nowait({
+                    result = {
                         "class": state,
                         "confidence": confidence,
                         "probs": probs.tolist() if probs is not None else None,
                         "frame_idx": frame_idx,
                         "filename": path,
-                    })
+                    }
+                    if mqtt_event is not None:
+                        result["mqtt_event"] = mqtt_event
+                    result_queue.put_nowait(result)
                 except Exception:
-                    pass
+                    LOGGER.warning("sdr_result_queue_drop frame_idx=%s", frame_idx)
 
             frame_idx += 1
             cnt += 1
@@ -340,6 +508,9 @@ class SDRThread:
         self.queue = None
         self.stop_event = None
         self.result_queue = None
+        self.mqtt_event_queue = None
+        self.mqtt_thread = None
+        self.result_thread = None
 
     @staticmethod
     def get_instance(socketio: SocketIO) -> "SDRThread":
@@ -357,6 +528,7 @@ class SDRThread:
         self.running = True
         self.queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.result_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
+        self.mqtt_event_queue = queue_module.Queue(maxsize=config.SDR_MQTT_QUEUE_SIZE)
         self.stop_event = mp.Event()
 
         p_reader = mp.Process(
@@ -378,6 +550,12 @@ class SDRThread:
         # Start result consumer thread
         self.result_thread = threading.Thread(target=self._result_consumer, daemon=True)
         self.result_thread.start()
+        self.mqtt_thread = threading.Thread(
+            target=self._mqtt_event_worker,
+            daemon=True,
+            name="sdr-mqtt-publisher-worker",
+        )
+        self.mqtt_thread.start()
 
         LOGGER.info("SDR pipeline started (reader + plotter/classifier)")
 
@@ -388,6 +566,13 @@ class SDRThread:
                 if self.result_queue is None:
                     break
                 result = self.result_queue.get(timeout=0.5)
+            except queue_module.Empty:
+                continue
+            except Exception:
+                LOGGER.exception("sdr_result_consumer_read_error")
+                continue
+
+            try:
                 self.socketio.emit("sdr_classify", {
                     "class": result["class"],
                     "confidence": result["confidence"],
@@ -395,8 +580,102 @@ class SDRThread:
                     "frame_idx": result["frame_idx"],
                     "filename": result["filename"],
                 })
+                mqtt_event = result.get("mqtt_event")
+                if mqtt_event is not None and self.mqtt_event_queue is not None:
+                    try:
+                        self.mqtt_event_queue.put_nowait(mqtt_event)
+                    except queue_module.Full:
+                        LOGGER.warning(
+                            "sdr_mqtt_queue_drop file_id=%s",
+                            mqtt_event.get("payload", {}).get("file_id"),
+                        )
             except Exception:
+                LOGGER.exception("sdr_result_consumer_error")
                 continue
+
+    def _mqtt_event_worker(self) -> None:
+        publisher = MqttTelemetryPublisher(MqttPublishSettings.from_config(config, "sdr"))
+        LOGGER.info("sdr_mqtt_worker_started queue_maxsize=%s", config.SDR_MQTT_QUEUE_SIZE)
+        while self.running and self.stop_event is not None and not self.stop_event.is_set():
+            try:
+                if self.mqtt_event_queue is None:
+                    break
+                event = self.mqtt_event_queue.get(timeout=0.5)
+            except queue_module.Empty:
+                continue
+            except Exception:
+                LOGGER.exception("sdr_mqtt_worker_read_error")
+                continue
+
+            try:
+                if event.get("type") == "sdr_threat_snapshot":
+                    self._publish_sdr_threat_snapshot(publisher, event)
+                else:
+                    LOGGER.warning("sdr_mqtt_unknown_event type=%s", event.get("type"))
+            except Exception:
+                LOGGER.exception(
+                    "sdr_mqtt_publish_error file_id=%s",
+                    event.get("payload", {}).get("file_id"),
+                )
+
+    def _publish_sdr_threat_snapshot(
+        self,
+        publisher: MqttTelemetryPublisher,
+        event: dict[str, Any],
+    ) -> None:
+        payload = event["payload"]
+        detect_topic, detect_message = build_detect_sdr_message(
+            event,
+            topic_prefix=config.MQTT_TOPIC_PREFIX,
+            site_id=config.MQTT_SITE_ID,
+            device_id=config.MQTT_DEVICE_ID,
+        )
+        if publisher.publish(detect_topic, detect_message):
+            LOGGER.info(
+                "sdr_detect_published topic=%s file_id=%s class=%s confidence=%s",
+                detect_topic,
+                payload.get("file_id"),
+                payload.get("class"),
+                payload.get("confidence"),
+            )
+
+        bin_path = payload.get("bin_path")
+        if not bin_path:
+            LOGGER.warning("sdr_snapshot_missing_bin_path file_id=%s", payload.get("file_id"))
+            return
+
+        chunk_bytes = max(1, int(config.SDR_MQTT_CHUNK_BYTES))
+        file_size = int(payload.get("file_bytes", 0))
+        chunk_count = max(1, math.ceil(file_size / chunk_bytes))
+        with open(bin_path, "rb") as bin_file:
+            for chunk_index in range(chunk_count):
+                chunk = bin_file.read(chunk_bytes)
+                chunk_payload = {
+                    **payload,
+                    "chunk_index": chunk_index,
+                    "chunk_count": chunk_count,
+                    "chunk_bytes": len(chunk),
+                    "chunk_sha256": hashlib.sha256(chunk).hexdigest(),
+                    "chunk_base64": base64.b64encode(chunk).decode("ascii"),
+                }
+                chunk_event = {
+                    "seq": int(event.get("seq", payload.get("frame_idx", 0))),
+                    "created_at_utc": event.get("created_at_utc"),
+                    "payload": chunk_payload,
+                }
+                raw_topic, raw_message = build_raw_sdr_snapshot_chunk_message(
+                    chunk_event,
+                    topic_prefix=config.MQTT_TOPIC_PREFIX,
+                    site_id=config.MQTT_SITE_ID,
+                    device_id=config.MQTT_DEVICE_ID,
+                )
+                publisher.publish(raw_topic, raw_message, wait_for_ack=False)
+        LOGGER.info(
+            "sdr_raw_snapshot_chunks_published file_id=%s chunks=%s bytes=%s",
+            payload.get("file_id"),
+            chunk_count,
+            file_size,
+        )
 
     def stop(self) -> None:
         """Stop the SDR capture pipeline"""

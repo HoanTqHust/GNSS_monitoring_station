@@ -234,7 +234,130 @@ def build_raw_ublox_message(
     return topic, message
 
 
-def build_detect_epoch_message(
+def build_raw_sdr_snapshot_chunk_message(
+    event: dict[str, Any],
+    *,
+    topic_prefix: str,
+    site_id: str,
+    device_id: str,
+) -> tuple[str, dict[str, Any]]:
+    payload = _require_payload(event)
+    file_id = str(payload.get("file_id") or "")
+    if not file_id:
+        raise ValueError("SDR snapshot file_id must not be empty")
+
+    chunk_index = _to_int(payload.get("chunk_index"))
+    chunk_count = _to_int(payload.get("chunk_count"))
+    if chunk_index < 0:
+        raise ValueError("SDR snapshot chunk_index must be non-negative")
+    if chunk_count <= 0:
+        raise ValueError("SDR snapshot chunk_count must be positive")
+    if chunk_index >= chunk_count:
+        raise ValueError("SDR snapshot chunk_index must be less than chunk_count")
+
+    seq = int(event.get("seq", payload.get("frame_idx", 0)))
+    event_time = payload.get("detected_at_utc") or event.get("created_at_utc")
+    ingest_time = payload.get("created_at_utc") or event_time
+    data = {
+        "record_type": "snapshot_chunk",
+        "receiver": str(payload.get("receiver") or "sdr0"),
+        "file_id": file_id,
+        "sample_format": str(payload.get("sample_format") or "sc16_q11"),
+        "center_freq_hz": _to_int(payload.get("center_freq_hz")),
+        "sample_rate_hz": _to_int(payload.get("sample_rate_hz")),
+        "gain_db": _to_float_or_none(payload.get("gain_db")),
+        "bandwidth_hz": _to_int_or_none(payload.get("bandwidth_hz")),
+        "band": payload.get("band"),
+        "requested_pre_seconds": _to_float_or_none(payload.get("requested_pre_seconds")),
+        "requested_post_seconds": _to_float_or_none(payload.get("requested_post_seconds")),
+        "sample_count": _to_int(payload.get("sample_count")),
+        "file_bytes": _to_int(payload.get("file_bytes")),
+        "file_sha256": payload.get("file_sha256"),
+        "chunk_index": chunk_index,
+        "chunk_count": chunk_count,
+        "chunk_bytes": _to_int(payload.get("chunk_bytes")),
+        "chunk_sha256": payload.get("chunk_sha256"),
+        "payload_encoding": "base64",
+        "chunk_base64": payload.get("chunk_base64"),
+        "detection": {
+            "class": payload.get("class"),
+            "confidence": _to_float_or_none(payload.get("confidence")),
+            "frame_idx": _to_int_or_none(payload.get("frame_idx")),
+        },
+    }
+    topic = build_topic(topic_prefix, site_id, device_id, "raw/sdr/v1")
+    message = build_envelope(
+        schema="gnss.raw.sdr.v1",
+        seq=seq,
+        device_id=device_id,
+        site_id=site_id,
+        frontend="sdr",
+        source=data["receiver"],
+        event_time=event_time,
+        ingest_time=ingest_time,
+        data=data,
+        event_id_suffix=f"sdr_raw_{file_id}_{chunk_index:06d}",
+    )
+    return topic, message
+
+
+def build_detect_sdr_message(
+    event: dict[str, Any],
+    *,
+    topic_prefix: str,
+    site_id: str,
+    device_id: str,
+) -> tuple[str, dict[str, Any]]:
+    payload = _require_payload(event)
+    file_id = payload.get("file_id")
+    seq = int(event.get("seq", payload.get("frame_idx", 0)))
+    event_time = payload.get("detected_at_utc") or event.get("created_at_utc")
+    ingest_time = payload.get("created_at_utc") or event_time
+    probs = payload.get("probs")
+    if probs is not None:
+        probs = [_to_float(value) for value in probs]
+
+    data = {
+        "detector_family": "sdr_ai",
+        "threat_type": payload.get("threat_type") or "jamming",
+        "jamming": bool(payload.get("jamming", True)),
+        "spoofing": payload.get("spoofing"),
+        "class": payload.get("class"),
+        "confidence": _to_float_or_none(payload.get("confidence")),
+        "probs": probs,
+        "class_names": payload.get("class_names"),
+        "frame_idx": _to_int_or_none(payload.get("frame_idx")),
+        "receiver": str(payload.get("receiver") or "sdr0"),
+        "center_freq_hz": _to_int(payload.get("center_freq_hz")),
+        "sample_rate_hz": _to_int(payload.get("sample_rate_hz")),
+        "gain_db": _to_float_or_none(payload.get("gain_db")),
+        "bandwidth_hz": _to_int_or_none(payload.get("bandwidth_hz")),
+        "image_encoding": payload.get("image_encoding") or "png_base64",
+        "spectrum_image_base64": payload.get("spectrum_image_base64"),
+        "snapshot_file_id": file_id,
+        "snapshot_sample_format": payload.get("sample_format") or "sc16_q11",
+        "snapshot_sample_count": _to_int_or_none(payload.get("sample_count")),
+        "snapshot_file_bytes": _to_int_or_none(payload.get("file_bytes")),
+        "snapshot_file_sha256": payload.get("file_sha256"),
+        "snapshot_chunk_count": _to_int_or_none(payload.get("chunk_count")),
+    }
+    topic = build_topic(topic_prefix, site_id, device_id, "detect/sdr/v1")
+    message = build_envelope(
+        schema="gnss.detect.sdr.v1",
+        seq=seq,
+        device_id=device_id,
+        site_id=site_id,
+        frontend="sdr",
+        source=data["receiver"],
+        event_time=event_time,
+        ingest_time=ingest_time,
+        data=data,
+        event_id_suffix=f"sdr_detect_{file_id or seq}",
+    )
+    return topic, message
+
+
+def build_detect_ublox_message(
     event: dict[str, Any],
     realtime_outputs: dict[str, dict[str, Any]],
     *,
@@ -252,9 +375,9 @@ def build_detect_epoch_message(
         "signals": _build_signals(payload),
         "detectors": _build_detectors(realtime_outputs),
     }
-    topic = build_topic(topic_prefix, site_id, device_id, "detect/epoch/v1")
+    topic = build_topic(topic_prefix, site_id, device_id, "detect/ublox/v1")
     message = build_envelope(
-        schema="gnss.detect.epoch.v1",
+        schema="gnss.detect.ublox.v1",
         seq=seq,
         device_id=device_id,
         site_id=site_id,
@@ -265,6 +388,9 @@ def build_detect_epoch_message(
         data=data,
     )
     return topic, message
+
+
+build_detect_epoch_message = build_detect_ublox_message
 
 
 def build_position_state_message(
@@ -531,6 +657,11 @@ def _to_float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_float(value: Any) -> float:
+    converted = _to_float_or_none(value)
+    return converted if converted is not None else 0.0
 
 
 def _to_int_or_none(value: Any) -> int | None:

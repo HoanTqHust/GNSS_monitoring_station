@@ -60,7 +60,7 @@ The platform runs on an embedded Linux host (Firefly RK3588 class), publishes te
                                           ▼
                          ┌──────────────────────────────────────┐
                          │              MQTT Broker             │
-                         │   raw/ublox  detect/epoch  health    │
+                         │   raw/ublox  detect/ublox  health    │
                          │   state/position  cmd/init  cmd/ack  │
                          └──────────────────────────────────────┘
 ```
@@ -87,7 +87,7 @@ The platform runs on an embedded Linux host (Firefly RK3588 class), publishes te
    ([realtime/pipeline.py](realtime/pipeline.py)) on each `epoch_pair`, draws the
    carrier-phase DD chart with [draws/UbloxChart.py](draws/UbloxChart.py), and emits
    `update_image` + `realtime_outputs` to the dashboard. It also publishes
-   `detect/epoch/v1` and `state/position/v1` MQTT messages.
+   `detect/ublox/v1` and `state/position/v1` MQTT messages.
 
 4. **Raw consumer thread** batches `ubx_frame` events and emits `raw_data_batch` to the
    dashboard. A **separate worker thread** (`raw_mqtt_publish_worker`) drains a dedicated
@@ -404,7 +404,7 @@ with `prefix = MQTT_TOPIC_PREFIX` (default `gnss`).
 | Direction | Suffix | Schema | QoS | Retain | Publisher |
 |---|---|---|---|---|---|
 | ↑ Up | `raw/ublox/v1`        | `gnss.raw.ublox.v1`     | 1 | false | raw consumer worker |
-| ↑ Up | `detect/epoch/v1`     | `gnss.detect.epoch.v1`  | 1 | false | detect consumer |
+| ↑ Up | `detect/ublox/v1`     | `gnss.detect.ublox.v1`  | 1 | false | detect consumer |
 | ↑ Up | `state/position/v1`   | `gnss.state.position.v1`| 1 | configurable | detect consumer |
 | ↑ Up | `health/v1`           | `gnss.health.v1`        | 1 | false | raw consumer (throttled) |
 | ↑ Up | `cmd/init/v1`         | `gnss.cmd.init.v1`      | 1 | true  | startup |
@@ -456,7 +456,7 @@ Every message — up or down — uses the same outer envelope:
 ```
 Heavy payload — subscribers that only need detection should **not** subscribe to this.
 
-#### 5.4.2. `detect/epoch/v1` — one synchronized epoch result
+#### 5.4.2. `detect/ublox/v1` — one synchronized epoch result
 ```json
 "data": {
   "time":     { "tow_s": 412345.0, "gps_week": 2310 },
@@ -486,7 +486,7 @@ Heavy payload — subscribers that only need detection should **not** subscribe 
 ```
 
 #### 5.4.3. `state/position/v1` — derived position-only state
-Built from `detect/epoch/v1` (`position` + summary `sat_count`, `avg_cno_dbhz`).
+Built from `detect/ublox/v1` (`position` + summary `sat_count`, `avg_cno_dbhz`).
 Useful for thin clients that only render a map pin. May be retained
 (`MQTT_POSITION_RETAIN`) so reconnecting consumers see the last known position
 immediately.

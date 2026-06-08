@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 
 from .common import BladeRFSdr
@@ -21,18 +23,26 @@ class Receiver:
 
     def receive(self, num_samples: int, buf_size: int = 8192) -> np.ndarray:
         """Receive `num_samples` complex64 samples."""
+        samples, _ = self.receive_with_raw(num_samples, buf_size)
+        return samples
+
+    def receive_with_raw(self, num_samples: int, buf_size: int = 8192) -> tuple[np.ndarray, bytes]:
+        """Receive samples and return both complex64 values and raw SC16_Q11 bytes."""
         buf = bytearray(buf_size * BYTES_PER_SAMPLE)
         x = np.zeros(num_samples, dtype=np.complex64)
+        raw_chunks: list[bytes] = []
         n_read = 0
 
         while n_read < num_samples:
             n = min(buf_size, num_samples - n_read)
             self.sdr.sdr.sync_rx(buf, n)
-            chunk = self.parse_samples(buf)[:n]
+            raw_chunk = bytes(buf[: n * BYTES_PER_SAMPLE])
+            raw_chunks.append(raw_chunk)
+            chunk = self.parse_samples(bytearray(raw_chunk))[:n]
             x[n_read : n_read + n] = chunk
             n_read += n
 
-        return x
+        return x, b"".join(raw_chunks)
 
     def stream(self, num_samples: int, buf_size: int = 8192):
         """Generator that yields samples in chunks."""

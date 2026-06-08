@@ -15,7 +15,7 @@ from realtime.types import RealtimeEpochPair
 from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
 from telemetry.mqtt_schema import (
     build_command_branch_message,
-    build_detect_epoch_message,
+    build_detect_ublox_message,
     build_health_message,
     build_position_state_message,
     build_raw_ublox_message,
@@ -186,7 +186,7 @@ class SocketThread:
         lock: threading.Lock,
     ) -> None:
         try:
-            topic, message = build_detect_epoch_message(
+            topic, message = build_detect_ublox_message(
                 event,
                 realtime_outputs,
                 topic_prefix=config.MQTT_TOPIC_PREFIX,

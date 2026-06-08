@@ -29,7 +29,8 @@ Topic đề xuất (client → server):
 ```text
 gnss/{site_id}/{device_id}/raw/ublox/v1
 gnss/{site_id}/{device_id}/raw/sdr/v1
-gnss/{site_id}/{device_id}/detect/epoch/v1
+gnss/{site_id}/{device_id}/detect/sdr/v1
+gnss/{site_id}/{device_id}/detect/ublox/v1
 gnss/{site_id}/{device_id}/state/position/v1
 gnss/{site_id}/{device_id}/health/v1
 ```
@@ -46,7 +47,7 @@ Ví dụ:
 
 ```text
 gnss/lab_hanoi/ducanh_user/raw/ublox/v1
-gnss/lab_hanoi/ducanh_user/detect/epoch/v1
+gnss/lab_hanoi/ducanh_user/detect/ublox/v1
 gnss/lab_hanoi/ducanh_user/health/v1
 gnss/lab_hanoi/ducanh_user/cmd/init/v1
 gnss/lab_hanoi/ducanh_user/cmd/ack/v1
@@ -57,8 +58,9 @@ gnss/lab_hanoi/ducanh_user/cmd/ack/v1
 - `site_id`: điểm đặt thiết bị, ví dụ `lab_hanoi`, `field_test_01`.
 - `device_id`: định danh logical của node publish lên MQTT, ví dụ `ducanh_user`.
 - `raw/ublox/v1`: từng frame UBX/NMEA từ receiver u-blox.
-- `raw/sdr/v1`: raw snapshot hoặc metadata từ SDR frontend trong tương lai.
-- `detect/epoch/v1`: kết quả detect cho một epoch đã đồng bộ.
+- `raw/sdr/v1`: raw bladeRF snapshot dạng chunk base64 quanh thời điểm detect jamming.
+- `detect/sdr/v1`: kết quả AI detect từ SDR, gồm jamming hiện tại và có thể mở rộng spoofing.
+- `detect/ublox/v1`: kết quả detect cho một epoch đã đồng bộ.
 - `state/position/v1`: vị trí mới nhất, có thể publish retain nếu cần server mới vào đọc trạng thái gần nhất.
 - `health/v1`: backlog, dropped counter, process status.
 - `cmd/init/v1`: client publish khi khởi động để báo ready, retain=true để server mới vào biết client online.
@@ -69,11 +71,12 @@ Cấu hình QoS bắt buộc:
 
 | Topic suffix | QoS | Retain | Ghi chú |
 | --- | --- | --- | --- |
-| `detect/epoch/v1` | 1 | false | Dữ liệu chính cho server ngoài đọc trạng thái spoofing. |
+| `detect/ublox/v1` | 1 | false | Dữ liệu chính cho server ngoài đọc trạng thái spoofing. |
 | `health/v1` | 1 | false | Dùng để cảnh báo backlog/drop. |
 | `state/position/v1` | 1 | true hoặc false | Dùng `retain=true` nếu server cần vị trí mới nhất ngay khi subscribe. |
 | `raw/ublox/v1` | 1 | false | Bắt buộc QoS 1 để giảm thất thoát raw frame trên đường MQTT; luôn theo dõi `seq`. |
-| `raw/sdr/v1` | 1 | false | Bắt buộc QoS 1 dù payload có thể lớn; cần kiểm soát throughput/backpressure khi triển khai SDR. |
+| `raw/sdr/v1` | 1 | false | Raw bladeRF snapshot dạng chunk base64; chỉ publish quanh jamming event, không stream liên tục. |
+| `detect/sdr/v1` | 1 | false | Kết quả AI SDR; hiện publish jamming, có thể mở rộng spoofing; kèm ảnh phổ base64 khi detected. |
 | `cmd/init/v1` | 1 | true | Client publish khi khởi động để server biết client online. |
 | `cmd/ack/v1` | 1 | false | Client publish khi nhận và xử lý command. |
 | `cmd/{command_type}/v1` | 1 | false | Server publish command xuống client. |
@@ -93,7 +96,7 @@ Tất cả payload JSON publish lên MQTT dùng envelope sau:
 
 ```json
 {
-  "schema": "gnss.detect.epoch.v1",
+  "schema": "gnss.detect.ublox.v1",
   "event_id": "ducanh_user-000000123456",
   "seq": 123456,
   "device_id": "ducanh_user",
@@ -110,7 +113,7 @@ Field bắt buộc:
 
 | Field | Type | Bắt buộc | Ý nghĩa |
 | --- | --- | --- | --- |
-| `schema` | string | yes | Tên schema và version, ví dụ `gnss.detect.epoch.v1`. |
+| `schema` | string | yes | Tên schema và version, ví dụ `gnss.detect.ublox.v1`. |
 | `event_id` | string | yes | ID duy nhất cho message. Server dùng để dedupe. |
 | `seq` | integer | yes | Sequence tăng dần theo publisher. Server dùng để phát hiện duplicate hoặc gap. |
 | `device_id` | string | yes | Node publish lên MQTT. Đây không phải receiver riêng lẻ. |
@@ -136,12 +139,12 @@ Quy tắc null:
 
 ---
 
-## 4) Schema `gnss.detect.epoch.v1`
+## 4) Schema `gnss.detect.ublox.v1`
 
 Topic:
 
 ```text
-gnss/{site_id}/{device_id}/detect/epoch/v1
+gnss/{site_id}/{device_id}/detect/ublox/v1
 ```
 
 Mục đích:
@@ -154,7 +157,7 @@ Ví dụ đầy đủ:
 
 ```json
 {
-  "schema": "gnss.detect.epoch.v1",
+  "schema": "gnss.detect.ublox.v1",
   "event_id": "ducanh_user-000000123456",
   "seq": 123456,
   "device_id": "ducanh_user",
@@ -388,16 +391,17 @@ gnss/{site_id}/{device_id}/raw/sdr/v1
 
 Mục đích:
 
-- Dành cho SDR frontend sau này.
-- Không ép SDR phải giống UBX.
-- Có thể gửi metadata-only hoặc gửi samples base64 tùy cấu hình.
+- Gửi raw bladeRF snapshot quanh thời điểm AI detect jamming.
+- Không stream raw SDR liên tục vì throughput rất lớn.
+- Mỗi snapshot `.bin` được chia thành nhiều MQTT message theo chunk.
+- File `.bin` dùng format gốc bladeRF `SC16_Q11`: little-endian `int16 I, int16 Q` interleaved.
 
 Ví dụ:
 
 ```json
 {
   "schema": "gnss.raw.sdr.v1",
-  "event_id": "ducanh_user-000000223450",
+  "event_id": "ducanh_user-000000223450-sdr_raw_sdr-20260605-0001_000000",
   "seq": 223450,
   "device_id": "ducanh_user",
   "site_id": "lab_hanoi",
@@ -406,15 +410,31 @@ Ví dụ:
   "event_time": "2026-04-22T03:29:36.000Z",
   "ingest_time": "2026-04-22T03:29:36.125Z",
   "data": {
+    "record_type": "snapshot_chunk",
     "receiver": "sdr0",
-    "sample_format": "cf32",
+    "file_id": "sdr-20260605-0001",
+    "sample_format": "sc16_q11",
     "center_freq_hz": 1575420000,
-    "sample_rate_hz": 4000000,
+    "sample_rate_hz": 5000000,
+    "gain_db": 30.0,
+    "bandwidth_hz": 2500000,
     "band": "L1",
-    "duration_ms": 100,
-    "sample_count": 400000,
+    "requested_pre_seconds": 1.0,
+    "requested_post_seconds": 2.0,
+    "sample_count": 15000000,
+    "file_bytes": 60000000,
+    "file_sha256": "f5b8...",
+    "chunk_index": 0,
+    "chunk_count": 916,
+    "chunk_bytes": 65536,
+    "chunk_sha256": "7b3a...",
     "payload_encoding": "base64",
-    "samples_base64": "AAAA..."
+    "chunk_base64": "AAAA...",
+    "detection": {
+      "class": "Narrowband",
+      "confidence": 0.94,
+      "frame_idx": 223450
+    }
   }
 }
 ```
@@ -423,19 +443,125 @@ Field trong `data`:
 
 | Field | Type | Bắt buộc | Ý nghĩa |
 | --- | --- | --- | --- |
+| `record_type` | string | yes | Luôn là `snapshot_chunk` trong luồng Option A. |
 | `receiver` | string | yes | SDR source, ví dụ `sdr0`. |
-| `sample_format` | string | yes | Format sample, ví dụ `cf32`, `ci16`, `ci8`. |
+| `file_id` | string | yes | ID chung cho toàn bộ snapshot; server ghép chunk theo giá trị này. |
+| `sample_format` | string | yes | `sc16_q11`: interleaved little-endian `int16 I, int16 Q`. |
 | `center_freq_hz` | integer | yes | Tần số center theo Hz. |
 | `sample_rate_hz` | integer | yes | Sample rate theo Hz. |
+| `gain_db` | number/null | yes | RX gain tại thời điểm capture. |
+| `bandwidth_hz` | integer/null | yes | RX bandwidth theo Hz. |
 | `band` | string/null | yes | Band GNSS, ví dụ `L1`, `L2`, `E1`. |
-| `duration_ms` | number | yes | Độ dài snapshot theo ms. |
-| `sample_count` | integer | yes | Số sample trong payload. |
-| `payload_encoding` | string | yes | `base64` hoặc `none`. |
-| `samples_base64` | string/null | yes | Sample bytes encode base64; `null` nếu chỉ gửi metadata. |
+| `requested_pre_seconds` | number | yes | Số giây raw được yêu cầu trước detection, mặc định `1.0`. |
+| `requested_post_seconds` | number | yes | Số giây raw được yêu cầu sau detection, mặc định `2.0`. |
+| `sample_count` | integer | yes | Tổng số complex sample trong toàn bộ file snapshot. |
+| `file_bytes` | integer | yes | Tổng byte của file `.bin` trước base64. |
+| `file_sha256` | string | yes | SHA-256 của toàn bộ file `.bin`; server dùng để verify sau khi ghép. |
+| `chunk_index` | integer | yes | Index chunk, bắt đầu từ `0`. |
+| `chunk_count` | integer | yes | Tổng số chunk của `file_id`. |
+| `chunk_bytes` | integer | yes | Số byte raw trong chunk hiện tại trước base64. |
+| `chunk_sha256` | string | yes | SHA-256 của chunk raw trước base64. |
+| `payload_encoding` | string | yes | Luôn là `base64` trong `v1`. |
+| `chunk_base64` | string | yes | Raw bytes của chunk encode base64. |
+| `detection` | object | yes | Tóm tắt event jamming tạo ra snapshot. |
+
+Quy tắc ghép file phía server:
+
+1. Subscribe `gnss/{site_id}/{device_id}/raw/sdr/v1`.
+2. Group message theo `data.file_id`.
+3. Decode từng `data.chunk_base64`.
+4. Verify từng chunk bằng `data.chunk_sha256`.
+5. Sắp xếp theo `data.chunk_index`, nối bytes từ `0..chunk_count-1`.
+6. Verify file cuối bằng `data.file_sha256`.
+7. Lưu thành `{file_id}.bin`; đọc lại theo format `SC16_Q11`.
 
 ---
 
-## 7) Schema `gnss.state.position.v1`
+## 7) Schema `gnss.detect.sdr.v1`
+
+Topic:
+
+```text
+gnss/{site_id}/{device_id}/detect/sdr/v1
+```
+
+Mục đích:
+
+- Gửi kết quả AI detect từ SDR.
+- Hiện runtime publish jamming; schema giữ tên generic để mở rộng spoofing hoặc threat khác từ SDR.
+- Khi threat được detect, message kèm ảnh phổ base64 để server hiển thị nhanh.
+- Trỏ sang raw snapshot bằng `snapshot_file_id`; server chỉ cần subscribe `raw/sdr/v1` khi muốn tải forensic raw `.bin`.
+
+Ví dụ:
+
+```json
+{
+  "schema": "gnss.detect.sdr.v1",
+  "event_id": "ducanh_user-000000223450-sdr_detect_sdr-20260605-0001",
+  "seq": 223450,
+  "device_id": "ducanh_user",
+  "site_id": "lab_hanoi",
+  "frontend": "sdr",
+  "source": "sdr0",
+  "event_time": "2026-04-22T03:29:36.000Z",
+  "ingest_time": "2026-04-22T03:29:36.125Z",
+  "data": {
+    "detector_family": "sdr_ai",
+    "threat_type": "jamming",
+    "jamming": true,
+    "spoofing": null,
+    "class": "Narrowband",
+    "confidence": 0.94,
+    "probs": [0.01, 0.94, 0.01, 0.01, 0.02, 0.01],
+    "class_names": ["Clean", "Narrowband", "Pulsed", "Swept", "Multi-tone", "Partial-band"],
+    "frame_idx": 223450,
+    "receiver": "sdr0",
+    "center_freq_hz": 1575420000,
+    "sample_rate_hz": 5000000,
+    "gain_db": 30.0,
+    "bandwidth_hz": 2500000,
+    "image_encoding": "png_base64",
+    "spectrum_image_base64": "iVBORw0KGgo...",
+    "snapshot_file_id": "sdr-20260605-0001",
+    "snapshot_sample_format": "sc16_q11",
+    "snapshot_sample_count": 15000000,
+    "snapshot_file_bytes": 60000000,
+    "snapshot_file_sha256": "f5b8...",
+    "snapshot_chunk_count": 916
+  }
+}
+```
+
+Field trong `data`:
+
+| Field | Type | Bắt buộc | Ý nghĩa |
+| --- | --- | --- | --- |
+| `detector_family` | string | yes | Nhóm detector, hiện là `sdr_ai`. |
+| `threat_type` | string | yes | Loại threat chính của event, ví dụ `jamming`, `spoofing`, `unknown`. |
+| `jamming` | boolean/null | yes | `true` khi AI SDR detect jamming; `null` nếu detector không kết luận jamming. |
+| `spoofing` | boolean/null | yes | Dành cho detector SDR spoofing sau này; hiện runtime để `null`. |
+| `class` | string | yes | Nhãn AI, ví dụ `Narrowband`, `Pulsed`, `Swept`. |
+| `confidence` | number | yes | Xác suất cao nhất của model. |
+| `probs` | number[]/null | yes | Xác suất theo `class_names`. |
+| `class_names` | string[]/null | yes | Thứ tự label của model. |
+| `frame_idx` | integer/null | yes | Frame index trong runtime SDR. |
+| `receiver` | string | yes | SDR source, ví dụ `sdr0`. |
+| `center_freq_hz` | integer | yes | Tần số center theo Hz. |
+| `sample_rate_hz` | integer | yes | Sample rate theo Hz. |
+| `gain_db` | number/null | yes | RX gain. |
+| `bandwidth_hz` | integer/null | yes | RX bandwidth. |
+| `image_encoding` | string | yes | `png_base64` trong runtime hiện tại. |
+| `spectrum_image_base64` | string | yes | Ảnh phổ encode base64; server decode thành PNG để hiển thị. |
+| `snapshot_file_id` | string/null | yes | ID snapshot raw tương ứng trong topic `raw/sdr/v1`. |
+| `snapshot_sample_format` | string/null | yes | Format raw của snapshot. |
+| `snapshot_sample_count` | integer/null | yes | Tổng sample trong snapshot. |
+| `snapshot_file_bytes` | integer/null | yes | Tổng byte raw snapshot. |
+| `snapshot_file_sha256` | string/null | yes | SHA-256 của file `.bin`. |
+| `snapshot_chunk_count` | integer/null | yes | Số chunk raw đã publish trên `raw/sdr/v1`. |
+
+---
+
+## 8) Schema `gnss.state.position.v1`
 
 Topic:
 
@@ -445,7 +571,7 @@ gnss/{site_id}/{device_id}/state/position/v1
 
 Mục đích:
 
-- Gửi vị trí mới nhất dạng nhẹ hơn `detect/epoch`.
+- Gửi vị trí mới nhất dạng nhẹ hơn `detect/ublox`.
 - Phù hợp để server mới subscribe lấy trạng thái gần nhất.
 - Có thể publish với `retain=true`.
 
@@ -476,7 +602,7 @@ Ví dụ:
 
 ---
 
-## 8) Schema `gnss.health.v1`
+## 9) Schema `gnss.health.v1`
 
 Topic:
 
@@ -552,9 +678,9 @@ Field trong `data`:
 
 ---
 
-## 9) Schema Command (server → client)
+## 10) Schema Command (server → client)
 
-### 9.1 Mục đích
+### 10.1 Mục đích
 
 Chiều dữ liệu ngược lại: server gửi lệnh xuống local client. Client subscribe topic `cmd/{command_type}/v1` để nhận lệnh và publish `cmd/ack/v1` để xác nhận.
 
@@ -562,7 +688,7 @@ Client tự động publish `cmd/init/v1` (retain=true) khi khởi động để
 - Server biết client đang online.
 - Server mới subscribe có thể đọc được trạng thái gần nhất của client.
 
-### 9.2 Schema `gnss.cmd.init.v1`
+### 10.2 Schema `gnss.cmd.init.v1`
 
 Topic:
 
@@ -597,7 +723,7 @@ Field trong `data`:
 | `status` | string | yes | `online` khi client khởi động thành công. |
 | `ready` | boolean | yes | `true` khi pipeline sẵn sàng nhận lệnh. |
 
-### 9.3 Schema `gnss.cmd.ack.v1`
+### 10.3 Schema `gnss.cmd.ack.v1`
 
 Topic:
 
@@ -635,7 +761,7 @@ Field trong `data`:
 | `acknowledged` | array[string] | yes | Danh sách `event_id` của các command đã xử lý thành công. |
 | `result` | object | no | Kết quả chi tiết của command cuối cùng. Chỉ có khi command handler trả về extra data. |
 
-### 9.4 Command format (server → client)
+### 10.4 Command format (server → client)
 
 Server publish command lên topic:
 
@@ -670,7 +796,7 @@ Field trong `data`:
 | `command_type` | string | yes | Loại command, ví dụ `restart`, `calibrate`, `configure`. |
 | `params` | object | yes | Tham số cho command, structure tùy loại command. |
 
-### 9.5 Schema `gnss.cmd.ublox.*.v1` (server → client)
+### 10.5 Schema `gnss.cmd.ublox.*.v1` (server → client)
 
 Client subscribe topic pattern `gnss/{site_id}/{device_id}/cmd/ublox/+/v1` để nhận ublox commands. Client tự động publish `cmd/ack/v1` sau khi xử lý command.
 
@@ -919,18 +1045,30 @@ ACK response:
 
 ---
 
-## 10) Hướng dẫn cho server subscriber
+## 11) Hướng dẫn cho server subscriber
 
 Server chỉ cần kết quả spoofing:
 
 ```text
-subscribe gnss/+/+/detect/epoch/v1
+subscribe gnss/+/+/detect/ublox/v1
+```
+
+Server chỉ cần kết quả AI SDR và ảnh phổ:
+
+```text
+subscribe gnss/+/+/detect/sdr/v1
 ```
 
 Server cần raw UBX để replay:
 
 ```text
 subscribe gnss/+/+/raw/ublox/v1
+```
+
+Server cần raw bladeRF forensic snapshot:
+
+```text
+subscribe gnss/+/+/raw/sdr/v1
 ```
 
 Server cần health:
@@ -959,7 +1097,7 @@ Xử lý status:
 
 ---
 
-## 11) Mapping từ mẫu ban đầu sang schema mới
+## 12) Mapping từ mẫu ban đầu sang schema mới
 
 Mẫu ban đầu:
 
@@ -1004,7 +1142,7 @@ Lý do không giữ schema phẳng:
 
 ---
 
-## 12) Quy tắc tương thích
+## 13) Quy tắc tương thích
 
 Trong `v1`:
 
@@ -1025,7 +1163,7 @@ health.status: running | degraded | stopped | error
 
 ---
 
-## 13) Checklist cho server ngoài
+## 14) Checklist cho server ngoài
 
 - Subscribe đúng topic theo nhu cầu, không subscribe `raw/#` nếu chỉ cần spoofing status.
 - Validate `schema` trước khi parse `data`.
@@ -1040,7 +1178,7 @@ health.status: running | degraded | stopped | error
 
 ---
 
-## 14) Cấu hình publisher trong app
+## 15) Cấu hình publisher trong app
 
 App đọc cấu hình MQTT từ environment hoặc `.env`:
 
@@ -1057,6 +1195,15 @@ MQTT_QOS=1
 MQTT_KEEPALIVE_S=60
 MQTT_PUBLISH_TIMEOUT_S=2.0
 MQTT_POSITION_RETAIN=0
+
+# SDR snapshot quanh jamming event
+SDR_SNAPSHOT_PRE_SECONDS=1.0
+SDR_SNAPSHOT_POST_SECONDS=2.0
+SDR_JAMMING_CONFIDENCE_THRESHOLD=0.80
+SDR_MQTT_CHUNK_BYTES=65536
+SDR_SNAPSHOT_DIR=output_sdr
+SDR_SNAPSHOT_COOLDOWN_SECONDS=5.0
+SDR_MQTT_QUEUE_SIZE=256
 ```
 
 Quy tắc bảo mật:
@@ -1071,7 +1218,9 @@ Mapping runtime hiện tại:
 | Runtime event | MQTT topic |
 | --- | --- |
 | `ubx_frame` từ raw queue | `gnss/{site_id}/{device_id}/raw/ublox/v1` |
-| `epoch_pair` sau realtime detector | `gnss/{site_id}/{device_id}/detect/epoch/v1` |
+| `epoch_pair` sau realtime detector | `gnss/{site_id}/{device_id}/detect/ublox/v1` |
+| AI SDR detect | `gnss/{site_id}/{device_id}/detect/sdr/v1` |
+| Raw bladeRF snapshot chunks | `gnss/{site_id}/{device_id}/raw/sdr/v1` |
 | Position rút gọn từ detect message | `gnss/{site_id}/{device_id}/state/position/v1` |
 | Queue/MQTT metrics sau raw batch | `gnss/{site_id}/{device_id}/health/v1` |
 | Client khởi động (retain) | `gnss/{site_id}/{device_id}/cmd/init/v1` |

@@ -225,7 +225,7 @@ This repository implements a real-time GNSS monitoring system focused on compari
 - Added `README_MQTT_DATA_SCHEMA_VI.md` as the Vietnamese MQTT contract document with diacritics for external server subscribers.
 - MQTT schema now requires QoS 1 for every topic family; subscribers must still deduplicate by `event_id` and track `seq` gaps because QoS 1 is at-least-once delivery and does not protect data lost before publish.
 - Implemented initial MQTT publishing path:
-  - `telemetry/mqtt_schema.py` builds `raw/ublox`, `detect/epoch`, `state/position`, and `health` JSON envelopes.
+  - `telemetry/mqtt_schema.py` builds `raw/ublox`, `detect/ublox`, `state/position`, and `health` JSON envelopes.
   - `telemetry/mqtt_publisher.py` publishes JSON through paho-mqtt with QoS 1 and waits for publish acknowledgement.
   - `thread/SocketThread.py` publishes raw UBX messages from the raw consumer, detect/position messages from the detect consumer, and health messages after raw batch emission.
   - MQTT config is environment-driven in `config.py`; `MQTT_USERNAME` defaults to `rw_user`, but `MQTT_PASSWORD` has no default and must be supplied outside git.
@@ -276,7 +276,7 @@ This repository implements a real-time GNSS monitoring system focused on compari
 
 - Re-enabled MQTT publishing in `thread/SocketThread.py` for:
   - raw stream (`raw/ublox/v1`) in `raw_consumer_thread`
-  - detect stream (`detect/epoch/v1`) and position (`state/position/v1`) in `detect_consumer_thread`
+  - detect stream (`detect/ublox/v1`) and position (`state/position/v1`) in `detect_consumer_thread`
   - health stream (`health/v1`) after raw batch emit
 - Restored MQTT metric counters in runtime queue stats:
   - `mqtt_raw_published/failed`
@@ -463,3 +463,119 @@ No statement in this document is based on external assumptions beyond the curren
 - Validation:
   - `python3 -m py_compile telemetry/mqtt_subscriber.py tests/test_mqtt_telemetry.py`
   - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `13 passed`
+
+## SDR Flow Analysis (2026-06-05)
+
+- Added `docs/sdr-flow-analysis.md` documenting the current bladeRF SDR path:
+  - `app.py` exposes `/sdr`, `/sdr/latest_bmp`, `/sdr/bmp/<filename>`, and `/sdr/stop`.
+  - `SDRThread` starts `reader_process`, `plotter_process`, and a result consumer thread.
+  - `reader_process` reads bladeRF SC16_Q11 samples, converts them to `complex64`, accumulates 8 chunks of 8192 samples, and pushes one 65536-sample frame about every 0.1 seconds.
+  - `plotter_process` creates a BMP spectrogram, saves it under `BKDATASET/`, runs the ResNet18 classifier, and emits `sdr_classify` through Socket.IO.
+  - `templates/sdr.html` receives class/probability data through Socket.IO but polls `/sdr/latest_bmp` every 500 ms for the actual image.
+- Important finding:
+  - `thread/SDRThread.py` currently hardcodes `60 MHz`, FFT `512/384`, dB power, custom colormap, BMP, raw 0-1 preprocessing, and labels `Clean/Narrowband/Pulsed/Swept/Multi-tone/Partial-band`.
+  - `SDR/README_bladerf_integration.md` describes the model contract as `5 MHz`, 8192 samples, `iq.real`, STFT `256/128`, magnitude, matplotlib default rendering, PNG, ImageNet normalization, and labels `DME/NB/NoJam/SingleAM/SingleChirp/SingleFM`.
+  - Because these contracts conflict, SDR jamming detection should be treated as unverified until the runtime preprocessing and model label map are reconciled.
+
+## SDR Raw/MQTT Design Note (2026-06-05)
+
+- User requested feasibility for:
+  - saving raw bladeRF data as `.bin` files and sending those files through EMQX/MQTT
+  - sending base64-encoded spectrum images through EMQX/MQTT when jamming is detected
+- Feasible with bounded snapshots/chunking, not as continuous full-rate MQTT payloads:
+  - `5 Msps * 4 bytes/sample = 20 MB/s` raw SC16_Q11, about `26.7 MB/s` after base64.
+  - current SDR runtime hardcoded `60 Msps` would be about `240 MB/s` raw, about `320 MB/s` after base64.
+- Recommended architecture:
+  - add SDR raw capture before `Receiver.parse_samples()` so `.bin` stores original interleaved little-endian int16 I/Q (`SC16_Q11`) plus JSON metadata.
+  - publish raw SDR snapshots on `gnss/{site_id}/{device_id}/raw/sdr/v1` as chunked messages with `file_id`, `chunk_index`, `chunk_count`, `chunk_base64`, `sha256`, sample-rate/frequency/gain metadata, and QoS 1.
+  - publish jamming results on a separate lightweight detect topic, with the spectrum image base64 included only when `class != Clean` and confidence passes a configured threshold.
+  - keep a dedicated SDR MQTT worker queue with drop/failed/published metrics so heavy SDR payloads cannot block the UI or GNSS detect pipeline.
+
+## SDR Snapshot Option A Decision (2026-06-05)
+
+- User selected Option A for SDR raw publishing:
+  - keep a local ring buffer of recent bladeRF raw samples
+  - when jamming is detected, publish a bounded forensic snapshot instead of continuous raw SDR streaming
+  - default target window is `1s` before detection and `2s` after detection
+- Implementation should use explicit runtime config:
+  - `SDR_SNAPSHOT_PRE_SECONDS`
+  - `SDR_SNAPSHOT_POST_SECONDS`
+  - `SDR_JAMMING_CONFIDENCE_THRESHOLD`
+  - `SDR_MQTT_CHUNK_BYTES`
+  - `SDR_SNAPSHOT_DIR`
+  - `SDR_SNAPSHOT_COOLDOWN_SECONDS`
+- Raw `.bin` snapshot format should be original bladeRF SC16_Q11 interleaved little-endian int16 I/Q, not normalized `complex64`.
+- MQTT publishing should be chunked on `raw/sdr/v1`; jamming detection and spectrum image should be separate from raw chunks so subscribers can avoid heavy raw payloads.
+- MQTT topic assignment before implementation:
+  - raw SDR `.bin` snapshot chunks: `gnss/{site_id}/{device_id}/raw/sdr/v1`
+  - SDR detection result plus spectrum image base64: `gnss/{site_id}/{device_id}/detect/sdr/v1`
+  - health/metrics for SDR MQTT queue should remain under the existing `health/v1` family or extend it with SDR-specific counters.
+
+## SDR Snapshot MQTT Implementation (2026-06-05)
+
+- Implemented Option A runtime support:
+  - `SDR/src/receiver.py` now has `receive_with_raw()` returning both normalized `complex64` samples and original SC16_Q11 raw bytes.
+  - `thread/SDRThread.py` now sends `{samples, raw_bytes, captured_at_utc}` from reader to plotter.
+  - Plotter keeps a ring buffer for pre-detection raw frames.
+  - On jamming trigger (`class != Clean/Unknown` and `confidence >= SDR_JAMMING_CONFIDENCE_THRESHOLD`), plotter starts a pending snapshot, collects post-detection frames, saves `{file_id}.bin` and `{file_id}.json` in `SDR_SNAPSHOT_DIR`, and forwards one MQTT event to the main process.
+  - `SDRThread` now has a dedicated SDR MQTT worker queue; it publishes:
+    - `detect/sdr/v1` once per SDR threat snapshot, including class, confidence, probabilities, spectrum PNG base64, and snapshot metadata.
+    - `raw/sdr/v1` chunk messages for the `.bin` snapshot using `SDR_MQTT_CHUNK_BYTES`.
+- Added runtime config:
+  - `SDR_SNAPSHOT_PRE_SECONDS`
+  - `SDR_SNAPSHOT_POST_SECONDS`
+  - `SDR_JAMMING_CONFIDENCE_THRESHOLD`
+  - `SDR_MQTT_CHUNK_BYTES`
+  - `SDR_SNAPSHOT_DIR`
+  - `SDR_SNAPSHOT_COOLDOWN_SECONDS`
+  - `SDR_MQTT_QUEUE_SIZE`
+- Added schema builders:
+  - `build_raw_sdr_snapshot_chunk_message()`
+  - `build_detect_sdr_message()`
+  - `build_detect_ublox_message()`
+- Updated `README_MQTT_DATA_SCHEMA_VI.md` with the server-facing topic contract and chunk reassembly rules.
+- Validation:
+  - `python3 -m py_compile config.py SDR/src/receiver.py telemetry/mqtt_schema.py thread/SDRThread.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `15 passed`
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `4 passed`
+
+## MQTT Detect Topic Rename (2026-06-05)
+
+- Renamed public detect topics for source clarity and SDR extensibility:
+  - u-blox/GNSS receiver pair detect: `gnss/{site_id}/{device_id}/detect/ublox/v1`
+  - SDR AI detect: `gnss/{site_id}/{device_id}/detect/sdr/v1`
+- Rationale:
+  - SDR may detect both jamming and spoofing, so `detect/sdr_jamming/v1` was too narrow.
+  - `detect/ublox/v1` is easier for server subscribers to distinguish from SDR than `detect/epoch/v1`.
+- Schema names now match topics:
+  - `gnss.detect.ublox.v1`
+  - `gnss.detect.sdr.v1`
+- `telemetry/mqtt_schema.py` now exposes:
+  - `build_detect_ublox_message()`
+  - `build_detect_sdr_message()`
+  - `build_detect_epoch_message` remains as an alias for compatibility.
+- Validation after rename:
+  - `python3 -m py_compile config.py SDR/src/receiver.py telemetry/mqtt_schema.py thread/SDRThread.py thread/SocketThread.py tests/test_mqtt_telemetry.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `15 passed`
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `4 passed`
+
+## SDR Startup Debug Fix (2026-06-05)
+
+- User observed `python3 app.py` failing during import with:
+  - `TypeError: 'type' object is not subscriptable`
+  - source line: `SDR/src/receiver.py`, annotation `tuple[np.ndarray, bytes]`
+- Evidence:
+  - pre-fix repro log: `logs/debug/app_start_tuple_type_20260605.log`
+  - runtime Python is 3.8, where built-in generic annotations such as `tuple[...]` are evaluated at import time unless postponed.
+- Fix:
+  - added `from __future__ import annotations` to `SDR/src/receiver.py`.
+  - updated `thread/SDRThread.py` `_result_consumer()` to treat empty result queue timeout as a normal idle condition with `except queue_module.Empty: continue`; real queue read failures still log as `sdr_result_consumer_read_error`.
+- Verification:
+  - `python3 -m py_compile SDR/src/receiver.py thread/SDRThread.py app.py`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v` -> `15 passed`
+  - startup repro: `timeout 12s python3 app.py > logs/debug/app_start_result_consumer_fixed_20260605.log 2>&1`
+  - startup exit status was `124` because `timeout` stopped the running Flask server after 12 seconds.
+  - filtered startup log shows `SDR pipeline started` and Flask listening on `0.0.0.0`, `127.0.0.1:5000`, and `192.168.5.2:5000`.
+  - filtered startup log has no `TypeError`, no `Traceback`, no `sdr_result_consumer_error`, and no `sdr_result_consumer_read_error`.
+- Residual observation:
+  - `sdr_reader_queue_drop` warnings can still appear under load, indicating SDR reader/plotter throughput pressure; this is a performance/backpressure tuning topic, not the Python 3.8 import crash.

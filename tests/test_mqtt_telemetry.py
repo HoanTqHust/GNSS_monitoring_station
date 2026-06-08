@@ -4,9 +4,11 @@ import unittest
 from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
 from telemetry.mqtt_subscriber import CommandContext, MqttCommandSubscriber, MqttSubscribeSettings
 from telemetry.mqtt_schema import (
-    build_detect_epoch_message,
+    build_detect_ublox_message,
+    build_detect_sdr_message,
     build_health_message,
     build_position_state_message,
+    build_raw_sdr_snapshot_chunk_message,
     build_raw_ublox_message,
 )
 
@@ -141,7 +143,7 @@ class MqttTelemetrySchemaTests(unittest.TestCase):
         self.assertEqual(message["data"]["raw_encoding"], "base64")
         self.assertEqual(message["data"]["raw_base64"], "AQID")
 
-    def test_build_detect_epoch_message(self):
+    def test_build_detect_ublox_message(self):
         event = {
             "seq": 8,
             "created_at_utc": "2026-04-22T03:29:36.125+00:00",
@@ -167,7 +169,7 @@ class MqttTelemetrySchemaTests(unittest.TestCase):
             }
         }
 
-        topic, message = build_detect_epoch_message(
+        topic, message = build_detect_ublox_message(
             event,
             realtime_outputs,
             topic_prefix="gnss",
@@ -176,8 +178,8 @@ class MqttTelemetrySchemaTests(unittest.TestCase):
         )
         position_topic, position_message = build_position_state_message(message, topic_prefix="gnss")
 
-        self.assertEqual(topic, "gnss/lab_hanoi/ducanh_user/detect/epoch/v1")
-        self.assertEqual(message["schema"], "gnss.detect.epoch.v1")
+        self.assertEqual(topic, "gnss/lab_hanoi/ducanh_user/detect/ublox/v1")
+        self.assertEqual(message["schema"], "gnss.detect.ublox.v1")
         self.assertEqual(message["data"]["time"]["gps_week"], 2415)
         self.assertAlmostEqual(message["data"]["position"]["lat_deg"], 21.0055)
         self.assertAlmostEqual(message["data"]["position"]["lon_deg"], 105.8445)
@@ -231,6 +233,102 @@ class MqttTelemetrySchemaTests(unittest.TestCase):
         self.assertEqual(message["data"]["mqtt_raw_failed"], 1)
         self.assertEqual(message["data"]["mqtt_raw_queue_dropped"], 3)
         self.assertEqual(message["data"]["cpu_percent"], 35.4)
+
+    def test_build_raw_sdr_snapshot_chunk_message(self):
+        event = {
+            "seq": 42,
+            "created_at_utc": "2026-06-05T01:02:03.456+00:00",
+            "payload": {
+                "receiver": "sdr0",
+                "file_id": "sdr-20260605-0001",
+                "sample_format": "sc16_q11",
+                "center_freq_hz": 1575420000,
+                "sample_rate_hz": 5000000,
+                "gain_db": 30,
+                "bandwidth_hz": 2500000,
+                "band": "L1",
+                "requested_pre_seconds": 1.0,
+                "requested_post_seconds": 2.0,
+                "sample_count": 8192,
+                "file_bytes": 32768,
+                "file_sha256": "file-hash",
+                "chunk_index": 1,
+                "chunk_count": 3,
+                "chunk_bytes": 10,
+                "chunk_sha256": "chunk-hash",
+                "chunk_base64": "AQID",
+                "class": "Narrowband",
+                "confidence": 0.93,
+                "frame_idx": 42,
+                "detected_at_utc": "2026-06-05T01:02:03.000+00:00",
+            },
+        }
+
+        topic, message = build_raw_sdr_snapshot_chunk_message(
+            event,
+            topic_prefix="gnss",
+            site_id="lab_hanoi",
+            device_id="ducanh_user",
+        )
+
+        self.assertEqual(topic, "gnss/lab_hanoi/ducanh_user/raw/sdr/v1")
+        self.assertEqual(message["schema"], "gnss.raw.sdr.v1")
+        self.assertEqual(
+            message["event_id"],
+            "ducanh_user-000000000042-sdr_raw_sdr-20260605-0001_000001",
+        )
+        self.assertEqual(message["frontend"], "sdr")
+        self.assertEqual(message["source"], "sdr0")
+        self.assertEqual(message["data"]["record_type"], "snapshot_chunk")
+        self.assertEqual(message["data"]["payload_encoding"], "base64")
+        self.assertEqual(message["data"]["chunk_base64"], "AQID")
+        self.assertEqual(message["data"]["detection"]["class"], "Narrowband")
+
+    def test_build_detect_sdr_message(self):
+        event = {
+            "seq": 42,
+            "created_at_utc": "2026-06-05T01:02:03.456+00:00",
+            "payload": {
+                "receiver": "sdr0",
+                "file_id": "sdr-20260605-0001",
+                "class": "Narrowband",
+                "confidence": 0.93,
+                "probs": [0.01, 0.93, 0.01, 0.02, 0.02, 0.01],
+                "class_names": ["Clean", "Narrowband", "Pulsed", "Swept", "Multi-tone", "Partial-band"],
+                "frame_idx": 42,
+                "center_freq_hz": 1575420000,
+                "sample_rate_hz": 5000000,
+                "gain_db": 30,
+                "bandwidth_hz": 2500000,
+                "spectrum_image_base64": "iVBORw0KGgo=",
+                "sample_format": "sc16_q11",
+                "sample_count": 8192,
+                "file_bytes": 32768,
+                "file_sha256": "file-hash",
+                "chunk_count": 3,
+                "detected_at_utc": "2026-06-05T01:02:03.000+00:00",
+            },
+        }
+
+        topic, message = build_detect_sdr_message(
+            event,
+            topic_prefix="gnss",
+            site_id="lab_hanoi",
+            device_id="ducanh_user",
+        )
+
+        self.assertEqual(topic, "gnss/lab_hanoi/ducanh_user/detect/sdr/v1")
+        self.assertEqual(message["schema"], "gnss.detect.sdr.v1")
+        self.assertEqual(
+            message["event_id"],
+            "ducanh_user-000000000042-sdr_detect_sdr-20260605-0001",
+        )
+        self.assertEqual(message["data"]["detector_family"], "sdr_ai")
+        self.assertEqual(message["data"]["threat_type"], "jamming")
+        self.assertEqual(message["data"]["class"], "Narrowband")
+        self.assertEqual(message["data"]["image_encoding"], "png_base64")
+        self.assertEqual(message["data"]["spectrum_image_base64"], "iVBORw0KGgo=")
+        self.assertEqual(message["data"]["snapshot_file_id"], "sdr-20260605-0001")
 
 
 class MqttTelemetryPublisherTests(unittest.TestCase):

@@ -2,8 +2,8 @@
 
 ## Snapshot
 
-- Purpose: read GNSS UBX data, compute carrier phase double differences, render a real-time dashboard, and flag potential spoofing
-- Primary stack: Python, Flask, Flask-SocketIO, multiprocessing, pyserial, pyubx2, matplotlib, scikit-learn
+- Purpose: read GNSS UBX data, compute carrier phase double differences, render real-time dashboards, flag potential spoofing, and classify bladeRF SDR threat spectrograms
+- Primary stack: Python, Flask, Flask-SocketIO, multiprocessing, pyserial, pyubx2, matplotlib, scikit-learn, NumPy, PyTorch, bladeRF bindings
 - Main runtimes: 1 Flask process, 1 serial-reading process, 1 Socket.IO background task
 - Entry points:
   - `app.py`
@@ -18,12 +18,14 @@
 - `models/`: data wrappers for parsed RAWX messages
 - `realtime/`: realtime measurement-builder and detector-engine skeleton for live spoofing outputs
 - `telemetry/`: MQTT schema builders and publisher adapter for external server consumption
+- `SDR/`: bladeRF wrapper, examples/tests, and jamming classifier model artifacts
 - `thread/`: serial ingestion worker and Socket.IO streaming worker
 - `draws/`: plotting and detection logic
 - `logs/`: raw UBX logging helper
 - `templates/`: HTML frontend templates
 - `docs/`: project memory and repository documentation
 - `docs/dev-hoantran-vs-main.md`: Vietnamese per-commit ledger of `dev/hoantran` changes compared with `main`
+- `docs/sdr-flow-analysis.md`: SDR runtime flow and model-contract mismatch analysis
 - `record_ubx.sh`, `log.py`, `send_command.py`, `test.py`: operational and debugging scripts
 - `README_RAW_UBX_STREAM_VI.md`: Vietnamese field-by-field reference for realtime detector outputs, raw stream payloads, UI metrics, status meanings, and identity groups
 - `README_MQTT_DATA_SCHEMA_VI.md`: Vietnamese MQTT topic and JSON schema contract for external server subscribers
@@ -36,6 +38,7 @@
 | Serial ingestion | Reads UBX messages from two receivers, runs RTKLIB-stage normalization, and emits events into RAM ingress queue | `thread/ReadSerialThread.py`, `thread/RTKLIBStage.py` | changing serial ports, message types, normalization shape, or event payload mapping | `serial`, `pyubx2`, `models/RAWXData.py`, `config.py`, `multiprocessing.Queue` | `app.py`, `thread/SocketThread.py` |
 | Realtime detector skeleton | Converts normalized epochs into measurement frames and writes separated detector outputs | `realtime/pipeline.py`, `realtime/measurement_builders/*`, `realtime/detector_engines/*`, `realtime/output_writer.py` | adding live SoS/D3 flow, changing output format, preparing MQTT/REST integration | `models`-compatible RAWX objects, `numpy`, filesystem output | future live detector workers or publishers |
 | MQTT telemetry | Builds MQTT JSON envelopes and publishes them to Mosquitto-compatible brokers with QoS 1 | `telemetry/mqtt_schema.py`, `telemetry/mqtt_publisher.py`, `.env.example` | changing broker schema, topic mapping, QoS/publish behavior, or MQTT config defaults | `paho-mqtt`, `config.py` | `thread/SocketThread.py`, external server subscribers |
+| SDR detect pipeline | Captures bladeRF IQ samples, renders BMP spectrograms, runs ResNet18 SDR classifier, emits `sdr_classify`, and publishes bounded SDR threat snapshots over MQTT | `thread/SDRThread.py`, `SDR/src/*`, `telemetry/mqtt_schema.py`, `templates/sdr.html`, `SDR/model/*` | changing bladeRF RX settings, spectrogram preprocessing, class labels, model runtime, SDR dashboard behavior, or SDR snapshot MQTT publishing | `bladerf`, `numpy`, `torch`, `Pillow`, `matplotlib`, `flask_socketio`, `paho-mqtt` | `app.py`, `/sdr` dashboard, EMQX/MQTT subscribers |
 | Standalone live runner | Reads live UBX streams and feeds synchronized epochs into the realtime pipeline | `realtime/live_runner.py` | running the detector stack without touching the web app runtime | `serial`, `pyubx2`, `config.py`, `models/RAWXData.py`, `realtime/pipeline.py` | operators, live smoke tests |
 | Threshold calibration | Reads clean recorded UBX files, synchronizes epochs, and estimates four initial thresholds for the current realtime stack | `realtime/calibrate_thresholds.py` | deriving initial SoS/D3 thresholds from clean baseline data | `pyubx2`, `models/RAWXData.py`, `realtime/measurement_builders/*`, `numpy` | operators, future config wiring |
 | Visualization + detection | Computes carrier phase differences, creates skyplot/spectrum/DPS images, flags spoofing | `draws/UbloxChart.py` | changing the algorithm, plotting, or thresholds | `numpy`, `matplotlib`, `sklearn`, `config.py` | `thread/SocketThread.py` |
@@ -50,14 +53,18 @@
   - The browser opens `/` in `app.py`.
   - `templates/index.html` loads the Socket.IO client.
   - The client listens for the `update_image` event.
+  - The browser opens `/sdr` for the SDR jamming dashboard.
 - Data flow:
   - Serial device -> `ReadSerial.read_serial()` -> RTKLIB-stage normalization -> RAM ingress queue
   - RAM ingress queue -> `SocketThread.router_thread()` -> detect queue + raw queue
   - Detect queue -> `SocketThread.detect_consumer_thread()` -> detector + `UbloxChart` -> `update_image`
   - Raw queue -> `SocketThread.raw_consumer_thread()` -> `raw_data_batch`
   - Raw queue -> MQTT `raw/ublox/v1`
-  - Detect queue -> MQTT `detect/epoch/v1` + `state/position/v1`
+  - Detect queue -> MQTT `detect/ublox/v1` + `state/position/v1`
   - Raw batch metrics -> MQTT `health/v1`
+  - bladeRF -> `SDRThread.reader_process()` -> IQ frame queue -> `SDRThread.plotter_process()` -> `BKDATASET/*.bmp` + result queue -> Socket.IO `sdr_classify`
+  - `/sdr` frontend polls `/sdr/latest_bmp` and fetches `/sdr/bmp/<filename>` for the latest spectrogram image.
+  - On SDR threat detection -> `output_sdr/{file_id}.bin` + `.json` -> SDR MQTT worker -> `detect/sdr/v1` + chunked `raw/sdr/v1`
 - External integrations:
   - Serial ports under `/dev/ttyACM*`
   - Socket.IO CDN loaded from `templates/index.html`
@@ -107,6 +114,13 @@
   - version every published schema and include sequence numbers for duplicate/gap detection
 - If debugging receiver configuration:
   - inspect `send_command.py`, `test.py`, `record_ubx.sh`, and `log.py`
+- If changing the SDR jamming pipeline:
+  - start with `docs/sdr-flow-analysis.md`, `thread/SDRThread.py`, and `SDR/README_bladerf_integration.md`
+  - reconcile sample rate, frame size, STFT settings, colormap/render format, normalization, and class label order before trusting classifier results
+  - avoid importing bladeRF/PyTorch dependencies unconditionally when `SDR_ENABLED` is false
+  - add queue drop metrics and structured logs before tuning throughput
+  - for Option A raw publishing, keep raw SC16_Q11 bytes in a ring buffer and publish only bounded snapshots around jamming events; do not continuous-stream full-rate SDR over MQTT
+  - keep `README_MQTT_DATA_SCHEMA_VI.md` aligned with `telemetry/mqtt_schema.py` for server subscribers
 
 ## Validation Guide
 
@@ -129,6 +143,8 @@
   - whether the frontend still receives `update_image`
   - whether satellite filtering by `ELE_MASK` still behaves correctly
   - whether the hard-coded frontend IP still matches the actual server
+  - whether SDR modules remain import-compatible with Python 3.8 annotation behavior
+  - whether SDR result queue idle timeout remains treated as normal control flow, not logged as an exception
 
 ## Forward Architecture Note (Raw Throughput, Historical)
 
