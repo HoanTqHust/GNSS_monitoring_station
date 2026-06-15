@@ -595,8 +595,17 @@ MQTT_DEVICE_ID=test_device
 MQTT_QOS=1
 MQTT_POSITION_RETAIN=0
 
-# SDR / BladeRF
+# SDR / USRP X300 over Ethernet
 SDR_ENABLED=1
+SDR_SOURCE=usrp_x300
+SDR_USRP_ADDR=192.168.5.111
+SDR_USRP_ARGS=addr=192.168.5.111
+SDR_USRP_CHANNEL=0
+SDR_USRP_ANTENNA=
+SDR_USRP_STREAM_ARGS=
+SDR_USRP_RECV_TIMEOUT=1.0
+# Keep disabled for the deployed X300 + UBX-40 v2: probe reports fixed 40 MHz RX bandwidth.
+SDR_USRP_SET_BANDWIDTH=0
 SDR_DEVICE=libusb:device=6:3
 SDR_FREQ=1575420000
 SDR_SAMPLE_RATE=5000000
@@ -615,7 +624,12 @@ source venv/bin/activate
 pip install -r requirements.txt
 pip install pyubx2
 
-# (optional) build libbladeRF
+# USRP X300 runtime requires UHD with Python API on the RK3588 host.
+# Validate network/device first, for example:
+#   ping 192.168.5.111
+#   uhd_find_devices --args "addr=192.168.5.111"
+
+# (optional legacy bladeRF path) build libbladeRF
 ./SDR/build_libbladerf.sh
 
 python3 app.py

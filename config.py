@@ -81,8 +81,16 @@ class config:
     MQTT_PUBLISH_TIMEOUT_S = _env_float("MQTT_PUBLISH_TIMEOUT_S", 2.0)
     MQTT_POSITION_RETAIN = _env_bool("MQTT_POSITION_RETAIN", False)
 
-    # SDR Config (BladeRF)
+    # SDR Config
+    SDR_SOURCE = os.environ.get("SDR_SOURCE", "usrp_x300")
     SDR_DEVICE = os.environ.get("SDR_DEVICE", "libusb:device=6:3")
+    SDR_USRP_ADDR = os.environ.get("SDR_USRP_ADDR", "192.168.5.111")
+    SDR_USRP_ARGS = os.environ.get("SDR_USRP_ARGS", f"addr={SDR_USRP_ADDR}")
+    SDR_USRP_CHANNEL = int(os.environ.get("SDR_USRP_CHANNEL", 0))
+    SDR_USRP_ANTENNA = os.environ.get("SDR_USRP_ANTENNA", "")
+    SDR_USRP_STREAM_ARGS = os.environ.get("SDR_USRP_STREAM_ARGS", "")
+    SDR_USRP_RECV_TIMEOUT = _env_float("SDR_USRP_RECV_TIMEOUT", 1.0)
+    SDR_USRP_SET_BANDWIDTH = _env_bool("SDR_USRP_SET_BANDWIDTH", False)
     SDR_FREQ = _env_float("SDR_FREQ", 1575.42e6)  # GPS L1
     SDR_SAMPLE_RATE = _env_float("SDR_SAMPLE_RATE", 5e6)  # 5 MHz
     SDR_GAIN = _env_float("SDR_GAIN", 30)  # dB

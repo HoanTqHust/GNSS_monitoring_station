@@ -2,7 +2,7 @@
 
 ## Scope
 
-This note documents the current bladeRF SDR runtime as implemented in the repository and the gaps between the runtime, integration guide, and dashboard behavior.
+This note documents the current SDR runtime as implemented in the repository and the gaps between the runtime, integration guide, and dashboard behavior.
 
 ## Current Runtime Flow
 
@@ -18,30 +18,37 @@ This note documents the current bladeRF SDR runtime as implemented in the reposi
    - `reader_process`
    - `plotter_process`
    - one in-process result consumer thread
-4. `reader_process` opens bladeRF through `SDR/src/common.py::BladeRFSdr`, configures RX, and reads SC16_Q11 samples through `SDR/src/receiver.py::Receiver.receive()`.
-5. `Receiver.parse_samples()` converts interleaved int16 I/Q into `complex64` by dividing by `2048.0`.
-6. `reader_process` accumulates 8 chunks of 8192 complex samples into one frame of 65536 samples, throttled at about 0.1 seconds, then pushes the frame to the SDR queue.
-7. `reader_process` now sends both normalized `complex64` samples and original bladeRF SC16_Q11 raw bytes to the plotter queue.
-8. `plotter_process` drains frames, computes the spectrogram, renders a 640x480 RGB BMP, saves it into `BKDATASET/`, runs the PyTorch ResNet18 classifier if model loading succeeded, and pushes `{class, confidence, probs, frame_idx, filename}` into the result queue.
-9. When jamming is detected, `plotter_process` uses its raw-byte ring buffer to save a bounded snapshot under `SDR_SNAPSHOT_DIR` and attaches an MQTT event to the result queue.
-10. `SDRThread._mqtt_event_worker()` publishes the SDR detection result plus spectrum PNG base64 on `detect/sdr/v1`, then publishes chunked `.bin` data on `raw/sdr/v1`.
-11. `SDRThread._result_consumer()` emits each classifier record to Socket.IO event `sdr_classify`.
-12. `templates/sdr.html` updates the jamming class/probability UI from `sdr_classify`, but fetches the spectrogram image by polling `/sdr/latest_bmp` every 500 ms and then loading `/sdr/bmp/<basename>`.
+4. `reader_process` opens the configured SDR source:
+   - default `SDR_SOURCE=usrp_x300`: UHD Python `uhd.usrp.MultiUSRP("addr=192.168.5.111")`
+   - legacy `SDR_SOURCE=bladerf`: `SDR/src/common.py::BladeRFSdr`
+5. In USRP mode, the source configures RX rate/frequency/gain/optional antenna, creates `StreamArgs("fc32", "sc16")`, starts continuous streaming, and calls `recv()` regularly so X300 UDP packets are drained by the RK3588 host.
+   - UHD `set_rx_bandwidth()` is not called by default because the deployed X300 UBX-40 v2 probe reports fixed RX bandwidth `40000000.0 Hz`; set `SDR_USRP_SET_BANDWIDTH=1` only for hardware that accepts the requested bandwidth.
+   - UHD `set_rx_freq()` is called with `uhd.types.TuneRequest(CENTER_FREQ)` because UHD Python 3.15 on RK3588 rejected direct `set_rx_freq(float, channel)`.
+6. In bladeRF mode, `Receiver.parse_samples()` converts interleaved int16 I/Q into `complex64` by dividing by `2048.0`.
+7. `reader_process` accumulates 8 chunks of `SDR_NUM_SAMPLES` complex samples into one frame, throttled at about 0.1 seconds, then pushes the frame to the SDR queue.
+8. `reader_process` sends both normalized `complex64` samples and raw-byte-compatible data to the plotter queue. USRP mode reconstructs interleaved int16 bytes from `complex64` samples to keep the old snapshot/MQTT contract.
+9. `plotter_process` drains frames, computes the spectrogram, renders a 640x480 RGB BMP, saves it into `BKDATASET/`, runs the PyTorch ResNet18 classifier if model loading succeeded, and pushes `{class, confidence, probs, frame_idx, filename}` into the result queue.
+10. When jamming is detected, `plotter_process` uses its raw-byte ring buffer to save a bounded snapshot under `SDR_SNAPSHOT_DIR` and attaches an MQTT event to the result queue.
+11. `SDRThread._mqtt_event_worker()` publishes the SDR detection result plus spectrum PNG base64 on `detect/sdr/v1`, then publishes chunked `.bin` data on `raw/sdr/v1`.
+12. `SDRThread._result_consumer()` emits each classifier record to Socket.IO event `sdr_classify`.
+13. `templates/sdr.html` updates the jamming class/probability UI from `sdr_classify`, but fetches the spectrogram image by polling `/sdr/latest_bmp` every 500 ms and then loading `/sdr/bmp/<basename>`.
 
 ## Current Runtime Parameters
 
-The live `thread/SDRThread.py` constants are:
+The live `thread/SDRThread.py` runtime values now come from `config.py`:
 
 - Center frequency: `1575.42 MHz`
-- Sample rate: `60 MHz`
-- RX gain: `20 dB`
-- RX bandwidth: `30 MHz`
-- Chunk size: `8192` complex samples
-- Frame size: `8 * 8192 = 65536` complex samples
+- Sample rate: default `5 MHz`
+- RX gain: default `30 dB`
+- RX bandwidth metadata/request: default `2.5 MHz`
+- UHD RX bandwidth setter: disabled by default with `SDR_USRP_SET_BANDWIDTH=0`
+- Chunk size: default `8192` complex samples
+- Frame size: default `8 * 8192 = 65536` complex samples
 - Spectrogram: Hann window `512`, overlap `384`, FFT `512`
 - Display band: `-15 MHz` to `+15 MHz`
 - Render: dB power, custom colormap, `640x480` BMP
 - Model classes: `Clean`, `Narrowband`, `Pulsed`, `Swept`, `Multi-tone`, `Partial-band`
+- Default USRP X300 address: `192.168.5.111`
 
 ## Important Mismatches
 
@@ -60,13 +67,13 @@ The current runtime does not match `SDR/README_bladerf_integration.md`, which de
 
 Because the image generation, sampling rate, normalization, and labels differ, the current `sdr_classify` output should be treated as an unverified runtime signal until the model training contract is reconciled with `thread/SDRThread.py`.
 
-`config.py` also defines SDR env settings (`SDR_SAMPLE_RATE=5e6`, `SDR_GAIN=30`, `SDR_BANDWIDTH=2.5e6`, `SDR_NUM_SAMPLES=8192`), but `thread/SDRThread.py` currently hardcodes `60e6`, gain `20`, and `8192 * 8` frame assembly instead of using those config values.
+The previous runtime hardcoded `60e6`, gain `20`, and `8192 * 8` frame assembly. It now reads rate/frequency/gain/bandwidth/chunk size from `config.py`, but the image-generation/model-contract mismatch remains.
 
 ## Reliability And Observability Gaps
 
-- `thread/SDRThread.py` imports `torch` and the bladeRF wrapper at module import time. Because `app.py` imports `SDRThread` unconditionally, missing SDR dependencies can break app startup even when `SDR_ENABLED` is false.
+- `thread/SDRThread.py` imports `torch` at module import time. UHD and bladeRF imports are lazy, but runtime startup still requires the selected source dependency.
 - SDR queue overflow is silently ignored with broad `except Exception: pass` in both frame and result queues.
-- Reader/plotter worker status uses `print()` instead of structured logging, so the main `all.log` observability path is incomplete.
+- Reader/plotter worker startup and errors are now logged to `all.log`; older runs may only have child-process failures on stderr.
 - `BKDATASET/` receives one BMP per processed frame and has no retention policy.
 - The frontend has a Socket.IO listener for `sdr_data`, but current server code only emits `sdr_classify` and `sdr_stopped`.
 - The spectrogram image and classifier result are coupled only through filename timing; the image is not pushed atomically with the classifier result.

@@ -24,3 +24,4 @@ output_rt/
 .env*
 *.log
 BKDATASET/
+output_sdr/

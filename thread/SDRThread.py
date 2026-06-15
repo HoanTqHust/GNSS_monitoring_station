@@ -32,8 +32,6 @@ import matplotlib
 matplotlib.use("Agg")
 
 import sys
-sys.path.insert(0, "/home/firefly/double_difference_cp/SDR")
-from src import BladeRFSdr, Receiver
 
 from config import config
 from telemetry.mqtt_publisher import MqttPublishSettings, MqttTelemetryPublisher
@@ -43,15 +41,17 @@ from telemetry.mqtt_schema import (
 )
 
 LOGGER = logging.getLogger("thread.sdr_thread")
+LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "all.log")
 
 # ══════════════════════════════════════════════
-# CONFIG (mirror of test.py)
+# CONFIG (mirror of legacy SDR pipeline)
 # ══════════════════════════════════════════════
-SAMPLE_RATE  = 60e6
-CENTER_FREQ  = 1575.42e6
-GAIN         = 20
+SAMPLE_RATE  = float(config.SDR_SAMPLE_RATE)
+CENTER_FREQ  = float(config.SDR_FREQ)
+GAIN         = float(config.SDR_GAIN)
+BANDWIDTH    = float(config.SDR_BANDWIDTH)
 
-BUFFER_SIZE  = 8192
+BUFFER_SIZE  = int(config.SDR_NUM_SAMPLES)
 NUM_BUFFERS  = 8
 
 WINDOW_LEN   = 512
@@ -255,7 +255,7 @@ def _snapshot_metadata_base(file_id: str, detection: dict[str, Any], frames: lis
         "center_freq_hz": int(CENTER_FREQ),
         "sample_rate_hz": int(SAMPLE_RATE),
         "gain_db": float(GAIN),
-        "bandwidth_hz": int(SAMPLE_RATE / 2),
+        "bandwidth_hz": int(BANDWIDTH),
         "band": "L1",
         "requested_pre_seconds": float(config.SDR_SNAPSHOT_PRE_SECONDS),
         "requested_post_seconds": float(config.SDR_SNAPSHOT_POST_SECONDS),
@@ -289,31 +289,234 @@ def _save_sdr_snapshot(
     return metadata
 
 
+def _validate_positive(name: str, value: float) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+
+
+def _complex64_to_sc16_q11_bytes(samples: np.ndarray) -> bytes:
+    if samples is None:
+        raise ValueError("samples must not be None")
+    complex_samples = np.asarray(samples, dtype=np.complex64)
+    clipped_real = np.clip(np.real(complex_samples), -1.0, 1.0)
+    clipped_imag = np.clip(np.imag(complex_samples), -1.0, 1.0)
+    interleaved = np.empty(complex_samples.size * 2, dtype="<i2")
+    interleaved[0::2] = np.rint(clipped_real * 2047.0).astype("<i2")
+    interleaved[1::2] = np.rint(clipped_imag * 2047.0).astype("<i2")
+    return interleaved.tobytes()
+
+
+def _metadata_error_text(metadata: Any) -> str | None:
+    error_code = getattr(metadata, "error_code", None)
+    if error_code is None:
+        return None
+    text = str(error_code).lower()
+    if text in {"0", "none", "rxmetadataerrorcode.none", "rx_metadata_error_code.none"}:
+        return None
+    if text.endswith(".none") or text.endswith("_none"):
+        return None
+    return str(error_code)
+
+
+def _call_usrp_config(method: Any, value: Any, channel: int) -> None:
+    try:
+        method(value, channel)
+    except TypeError:
+        method(value)
+
+
+def _set_usrp_rx_freq(usrp: Any, uhd_module: Any, freq_hz: float, channel: int) -> None:
+    tune_request_cls = getattr(getattr(uhd_module, "types", None), "TuneRequest", None)
+    if tune_request_cls is None:
+        _call_usrp_config(usrp.set_rx_freq, freq_hz, channel)
+        return
+    tune_request = tune_request_cls(float(freq_hz))
+    _call_usrp_config(usrp.set_rx_freq, tune_request, channel)
+
+
+def _ensure_child_logging() -> None:
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    for handler in root_logger.handlers:
+        if (
+            isinstance(handler, logging.FileHandler)
+            and os.path.abspath(getattr(handler, "baseFilename", "")) == LOG_PATH
+        ):
+            return
+    handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    root_logger.addHandler(handler)
+
+
+class BladeRfReceiverSource:
+    def __init__(self) -> None:
+        sys.path.insert(0, "/home/firefly/double_difference_cp/SDR")
+        from src import BladeRFSdr, Receiver
+
+        _validate_positive("SDR_SAMPLE_RATE", SAMPLE_RATE)
+        _validate_positive("SDR_BANDWIDTH", BANDWIDTH)
+        self._sdr = BladeRFSdr(device_string=config.SDR_DEVICE)
+        self._sdr.config_rx(
+            freq=CENTER_FREQ,
+            sr=SAMPLE_RATE,
+            gain=GAIN,
+            bw=BANDWIDTH,
+        )
+        self._receiver = Receiver(self._sdr)
+        LOGGER.info(
+            "sdr_source_started source=bladerf device=%s freq_hz=%s sample_rate_hz=%s gain_db=%s bandwidth_hz=%s",
+            config.SDR_DEVICE,
+            CENTER_FREQ,
+            SAMPLE_RATE,
+            GAIN,
+            BANDWIDTH,
+        )
+
+    def receive_with_raw(self, num_samples: int) -> tuple[np.ndarray, bytes]:
+        return self._receiver.receive_with_raw(num_samples)
+
+    def close(self) -> None:
+        self._sdr.close()
+
+
+class UhdUsrpReceiverSource:
+    def __init__(self, uhd_module: Any | None = None) -> None:
+        _validate_positive("SDR_SAMPLE_RATE", SAMPLE_RATE)
+        _validate_positive("SDR_BANDWIDTH", BANDWIDTH)
+        if config.SDR_USRP_CHANNEL < 0:
+            raise ValueError("SDR_USRP_CHANNEL must be non-negative")
+        if not config.SDR_USRP_ARGS:
+            raise ValueError("SDR_USRP_ARGS must not be empty for USRP sources")
+
+        if uhd_module is None:
+            try:
+                import uhd as uhd_module
+            except ImportError as exc:
+                raise RuntimeError(
+                    "UHD Python module is required for SDR_SOURCE=usrp_x300. "
+                    "Install UHD with Python API enabled on the RK3588 host."
+                ) from exc
+
+        self._uhd = uhd_module
+        self._channel = int(config.SDR_USRP_CHANNEL)
+        self._recv_timeout_s = float(config.SDR_USRP_RECV_TIMEOUT)
+        _validate_positive("SDR_USRP_RECV_TIMEOUT", self._recv_timeout_s)
+
+        self._usrp = self._uhd.usrp.MultiUSRP(config.SDR_USRP_ARGS)
+        _call_usrp_config(self._usrp.set_rx_rate, SAMPLE_RATE, self._channel)
+        _set_usrp_rx_freq(self._usrp, self._uhd, CENTER_FREQ, self._channel)
+        _call_usrp_config(self._usrp.set_rx_gain, GAIN, self._channel)
+        if config.SDR_USRP_SET_BANDWIDTH and hasattr(self._usrp, "set_rx_bandwidth"):
+            _call_usrp_config(self._usrp.set_rx_bandwidth, BANDWIDTH, self._channel)
+        elif hasattr(self._usrp, "set_rx_bandwidth"):
+            LOGGER.info(
+                "usrp_rx_bandwidth_not_set requested_bandwidth_hz=%s reason=SDR_USRP_SET_BANDWIDTH_false",
+                BANDWIDTH,
+            )
+        if config.SDR_USRP_ANTENNA:
+            _call_usrp_config(self._usrp.set_rx_antenna, config.SDR_USRP_ANTENNA, self._channel)
+
+        stream_args = self._uhd.usrp.StreamArgs("fc32", "sc16")
+        stream_args.channels = [self._channel]
+        if config.SDR_USRP_STREAM_ARGS:
+            stream_args.args = config.SDR_USRP_STREAM_ARGS
+        self._rx_streamer = self._usrp.get_rx_stream(stream_args)
+        self._metadata = self._uhd.types.RXMetadata()
+        max_samps = int(self._rx_streamer.get_max_num_samps())
+        if max_samps <= 0:
+            raise RuntimeError("UHD RX streamer returned non-positive max samples")
+        self._recv_buffer = np.zeros(max_samps, dtype=np.complex64)
+        self._start_stream()
+        LOGGER.info(
+            "sdr_source_started source=usrp_x300 args=%s freq_hz=%s sample_rate_hz=%s gain_db=%s bandwidth_hz=%s channel=%s antenna=%s stream_args=%s",
+            config.SDR_USRP_ARGS,
+            CENTER_FREQ,
+            SAMPLE_RATE,
+            GAIN,
+            BANDWIDTH,
+            self._channel,
+            config.SDR_USRP_ANTENNA or "<default>",
+            config.SDR_USRP_STREAM_ARGS or "<default>",
+        )
+
+    def _start_stream(self) -> None:
+        stream_cmd = self._uhd.types.StreamCMD(self._uhd.types.StreamMode.start_cont)
+        stream_cmd.stream_now = True
+        self._rx_streamer.issue_stream_cmd(stream_cmd)
+
+    def receive_with_raw(self, num_samples: int) -> tuple[np.ndarray, bytes]:
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive")
+
+        samples = np.empty(num_samples, dtype=np.complex64)
+        received = 0
+        deadline = time.monotonic() + self._recv_timeout_s
+        while received < num_samples:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"USRP RX timeout received={received} requested={num_samples}"
+                )
+
+            chunk_len = min(num_samples - received, self._recv_buffer.size)
+            view = self._recv_buffer[:chunk_len]
+            try:
+                count = self._rx_streamer.recv(view, self._metadata, self._recv_timeout_s)
+            except TypeError:
+                count = self._rx_streamer.recv(view, self._metadata)
+
+            error_text = _metadata_error_text(self._metadata)
+            if error_text is not None:
+                LOGGER.warning("usrp_rx_metadata_error error=%s", error_text)
+
+            count = int(count)
+            if count <= 0:
+                continue
+            samples[received : received + count] = view[:count]
+            received += count
+
+        return samples, _complex64_to_sc16_q11_bytes(samples)
+
+    def close(self) -> None:
+        try:
+            stream_cmd = self._uhd.types.StreamCMD(self._uhd.types.StreamMode.stop_cont)
+            self._rx_streamer.issue_stream_cmd(stream_cmd)
+        except Exception:
+            LOGGER.exception("usrp_stop_stream_error")
+
+
+def _open_sdr_receiver_source():
+    source = str(config.SDR_SOURCE).strip().lower()
+    if source in {"usrp_x300", "usrp", "x300"}:
+        return UhdUsrpReceiverSource()
+    if source in {"bladerf", "blade_rf"}:
+        return BladeRfReceiverSource()
+    raise ValueError(f"Unsupported SDR_SOURCE: {config.SDR_SOURCE}")
+
+
 # ══════════════════════════════════════════════
 # PROCESS A — reader
 # ══════════════════════════════════════════════
 def reader_process(queue: mp.Queue, stop_event: mp.Event):
-    sys.path.insert(0, "/home/firefly/double_difference_cp/SDR")
-    from src import BladeRFSdr, Receiver
-
-    sdr = BladeRFSdr(device_string=config.SDR_DEVICE)
-    sdr.config_rx(
-        freq=CENTER_FREQ,
-        sr=SAMPLE_RATE,
-        gain=GAIN,
-        bw=SAMPLE_RATE / 2
-    )
-    rx = Receiver(sdr)
+    _ensure_child_logging()
+    receiver_source = None
 
     last_push_t = 0.0
     chunks = []
     raw_chunks = []
 
-    print(f"[reader] started — push mỗi {THROTTLE_S*1000:.0f} ms")
-
     try:
+        LOGGER.info(
+            "sdr_reader_starting source=%s throttle_ms=%s buffer_size=%s num_buffers=%s",
+            config.SDR_SOURCE,
+            THROTTLE_S * 1000,
+            BUFFER_SIZE,
+            NUM_BUFFERS,
+        )
+        receiver_source = _open_sdr_receiver_source()
+        LOGGER.info("sdr_reader_started source=%s", config.SDR_SOURCE)
         while not stop_event.is_set():
-            raw_samples, raw_bytes = rx.receive_with_raw(BUFFER_SIZE)
+            raw_samples, raw_bytes = receiver_source.receive_with_raw(BUFFER_SIZE)
             iq = raw_samples.astype(np.complex64)
 
             chunks.append(iq)
@@ -337,26 +540,31 @@ def reader_process(queue: mp.Queue, stop_event: mp.Event):
                     LOGGER.warning("sdr_reader_queue_drop")
                 last_push_t = now
 
-    except Exception as e:
-        print(f"[reader] error: {e}")
+    except Exception:
+        LOGGER.exception("sdr_reader_process_error")
     finally:
-        sdr.close()
-        print("[reader] stopped")
+        if receiver_source is not None:
+            try:
+                receiver_source.close()
+            except Exception:
+                LOGGER.exception("sdr_reader_close_error")
+        LOGGER.info("sdr_reader_stopped")
 
 
 # ══════════════════════════════════════════════
 # PROCESS B — plotter + classifier
 # ══════════════════════════════════════════════
 def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queue):
+    _ensure_child_logging()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load model in this process
     model = None
     try:
         model = load_model()
-        print("[classifier] model loaded OK")
-    except Exception as e:
-        print(f"[classifier] model load error: {e}")
+        LOGGER.info("sdr_classifier_model_loaded path=%s", MODEL_PATH)
+    except Exception:
+        LOGGER.exception("sdr_classifier_model_load_error path=%s", MODEL_PATH)
 
     frame_idx = 0
     t0 = time.time()
@@ -365,7 +573,7 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
     pending_snapshot: dict[str, Any] | None = None
     next_snapshot_allowed_at = 0.0
 
-    print(f"[plotter] saving -> {OUTPUT_DIR}")
+    LOGGER.info("sdr_plotter_started output_dir=%s", OUTPUT_DIR)
 
     while not stop_event.is_set():
         try:
@@ -404,8 +612,8 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
             if model is not None:
                 try:
                     state, confidence, probs = predict_image(model, img)
-                except Exception as e:
-                    print(f"[classifier] inference error: {e}")
+                except Exception:
+                    LOGGER.exception("sdr_classifier_inference_error frame_idx=%s", frame_idx)
 
             detected_at_utc = _utc_now_z()
             mqtt_event = None
@@ -436,7 +644,12 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
                     "post_until_monotonic": time.monotonic() + max(0.0, config.SDR_SNAPSHOT_POST_SECONDS),
                 }
                 created_pending = True
-                print(f"[snapshot] started file_id={file_id} class={state} confidence={confidence:.3f}")
+                LOGGER.info(
+                    "sdr_snapshot_started file_id=%s class=%s confidence=%s",
+                    file_id,
+                    state,
+                    confidence,
+                )
             elif pending_snapshot is not None and raw_bytes:
                 pending_snapshot["frames"].append(raw_record)
 
@@ -458,9 +671,11 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
                         "payload": mqtt_payload,
                     }
                     next_snapshot_allowed_at = time.monotonic() + max(0.0, config.SDR_SNAPSHOT_COOLDOWN_SECONDS)
-                    print(
-                        "[snapshot] saved "
-                        f"file_id={snapshot['file_id']} bytes={snapshot['file_bytes']} chunks={chunk_count}"
+                    LOGGER.info(
+                        "sdr_snapshot_saved file_id=%s bytes=%s chunks=%s",
+                        snapshot["file_id"],
+                        snapshot["file_bytes"],
+                        chunk_count,
                     )
                     pending_snapshot = None
 
@@ -485,13 +700,13 @@ def plotter_process(queue: mp.Queue, stop_event: mp.Event, result_queue: mp.Queu
 
             elapsed = time.time() - t0
             if elapsed >= 5.0:
-                print(f"[plotter] {cnt/elapsed:.2f} fps | total: {frame_idx}")
+                LOGGER.info("sdr_plotter_fps fps=%.2f total_frames=%s", cnt / elapsed, frame_idx)
                 t0 = time.time()
                 cnt = 0
-        except Exception as e:
-            print(f"[plotter] error: {e}")
+        except Exception:
+            LOGGER.exception("sdr_plotter_process_error frame_idx=%s", frame_idx)
 
-    print(f"[plotter] stopped — total saved: {frame_idx}")
+    LOGGER.info("sdr_plotter_stopped total_frames=%s", frame_idx)
 
 
 # ══════════════════════════════════════════════

@@ -4,8 +4,8 @@ Last source review: 2026-06-15.
 
 ## Snapshot
 
-- Purpose: real-time GNSS spoofing detection from two u-blox receivers plus SDR jamming detection from bladeRF.
-- Primary stack: Python, Flask, Flask-SocketIO, multiprocessing/threading queues, pyserial, pyubx2, NumPy, matplotlib, scikit-learn, PyTorch, paho-mqtt, bladeRF Python bindings.
+- Purpose: real-time GNSS spoofing detection from two u-blox receivers plus SDR jamming detection from USRP X300 or legacy bladeRF.
+- Primary stack: Python, Flask, Flask-SocketIO, multiprocessing/threading queues, pyserial, pyubx2, NumPy, matplotlib, scikit-learn, PyTorch, paho-mqtt, UHD Python API, legacy bladeRF Python bindings.
 - Main runtime: `app.py`.
 - Main dashboards:
   - `/` -> `templates/index.html`
@@ -22,7 +22,7 @@ Last source review: 2026-06-15.
 - `models/`: light wrappers around parsed `RXM-RAWX` satellite measurements.
 - `draws/`: plot generation and sliding-window carrier-phase visual detector.
 - `templates/`: browser UI for GNSS and SDR dashboards.
-- `SDR/src/`: bladeRF RX/TX wrapper library.
+- `SDR/src/`: legacy bladeRF RX/TX wrapper library.
 - `SDR/tests/`, `SDR/examples/`: hardware-oriented SDR utilities.
 - `tests/`: deterministic unit tests for RAM queue helpers and MQTT telemetry.
 - `clone/`: batch/reference algorithm experiments for AOA/SoS/D3/smoothed pseudorange; not wired into live app.
@@ -47,8 +47,8 @@ Last source review: 2026-06-15.
 | MQTT schema | Builds versioned topic payloads for UBX raw/detect/position/health, SDR detect/raw chunks, commands/ACK | `telemetry/mqtt_schema.py` | changing external server contract or payload normalization | runtime event payloads | `SocketThread`, `SDRThread`, tests |
 | MQTT publish | Validates settings and publishes JSON through paho-mqtt with QoS 1 | `telemetry/mqtt_publisher.py` | changing broker connection, QoS, retain/wait behavior | paho-mqtt | `SocketThread`, `SDRThread`, tests |
 | MQTT command subscriber | Subscribes command topics, dedupes command IDs, configures/resets realtime pipeline, publishes ACK | `telemetry/mqtt_subscriber.py` | adding commands, changing command topic grammar, changing ACK semantics | paho-mqtt, `config.py`, `RealtimeSpoofingPipeline` | `SocketThread.detect_consumer_thread()` |
-| SDR runtime | Captures bladeRF IQ, renders BMP, runs classifier, emits UI result, publishes threat snapshot | `thread/SDRThread.py` | changing jamming classifier runtime, snapshot logic, SDR MQTT publish, `/sdr` behavior | torch, PIL, matplotlib, bladeRF wrapper, telemetry | `app.py`, `/sdr`, MQTT subscribers |
-| SDR wrapper | Minimal bladeRF RX/TX abstraction | `SDR/src/common.py`, `SDR/src/receiver.py`, `SDR/src/transmitter.py` | changing bladeRF sync config or IQ conversion | `bladerf._bladerf`, NumPy | `SDRThread`, SDR examples/tests |
+| SDR runtime | Captures IQ from USRP X300 over UHD or legacy bladeRF, renders BMP, runs classifier, emits UI result, publishes threat snapshot | `thread/SDRThread.py` | changing SDR source selection, jamming classifier runtime, snapshot logic, SDR MQTT publish, `/sdr` behavior | torch, PIL, matplotlib, UHD Python API or bladeRF wrapper, telemetry | `app.py`, `/sdr`, MQTT subscribers |
+| Legacy SDR wrapper | Minimal bladeRF RX/TX abstraction | `SDR/src/common.py`, `SDR/src/receiver.py`, `SDR/src/transmitter.py` | changing legacy bladeRF sync config or IQ conversion | `bladerf._bladerf`, NumPy | `SDRThread` when `SDR_SOURCE=bladerf`, SDR examples/tests |
 | Frontend UI | Shows GNSS plots/cards/raw table/summary chart and SDR spectrogram/classifier | `templates/index.html`, `templates/sdr.html`, `templates/about.html` | changing Socket.IO event handling, display fields, client endpoints | Socket.IO CDN, Chart.js CDN, Flask routes | browser users |
 | Tests | Deterministic helper/schema tests | `tests/test_ram_queue_flow.py`, `tests/test_mqtt_telemetry.py` | validating queue and MQTT changes | unittest, fake objects | developers/agents |
 | Ops utilities | Manual capture/config scripts | `log.py`, `record_ubx.sh`, `send_command.py`, `test.py`, `log_fake.py` | receiver configuration, raw UBX capture, local debug | serial, pyubx2 | operators |
@@ -120,13 +120,18 @@ Last source review: 2026-06-15.
    - `plotter_process`;
    - result consumer thread;
    - MQTT event worker thread.
-4. `reader_process` opens bladeRF through `SDR/src/common.py::BladeRFSdr`, configures RX, reads raw SC16_Q11 samples via `Receiver.receive_with_raw()`, and pushes normalized samples plus raw bytes.
-5. `plotter_process` renders BMP spectrograms under `BKDATASET/`, runs ResNet18 inference if model loads, and sends `sdr_classify` results.
-6. If jamming is detected above `SDR_JAMMING_CONFIDENCE_THRESHOLD`, it saves a bounded raw snapshot under `output_sdr/` and attaches an MQTT event.
-7. SDR MQTT worker publishes:
+4. `reader_process` opens the selected source:
+   - default `SDR_SOURCE=usrp_x300`: UHD `MultiUSRP(SDR_USRP_ARGS)` with `addr=192.168.5.111`, RX `StreamArgs("fc32", "sc16")`, and continuous `recv()`;
+   - legacy `SDR_SOURCE=bladerf`: `SDR/src/common.py::BladeRFSdr`.
+5. USRP mode configures rate/frequency/gain/optional antenna; it does not call `set_rx_bandwidth()` by default because the deployed X300 UBX-40 v2 probe reports fixed RX bandwidth `40000000.0 Hz`. Override with `SDR_USRP_SET_BANDWIDTH=1` only for hardware that accepts the requested bandwidth.
+6. USRP mode tunes RX frequency through `uhd.types.TuneRequest`; UHD Python 3.15 on RK3588 rejected direct `set_rx_freq(float, channel)`.
+7. USRP mode reconstructs interleaved int16 raw bytes from `complex64` samples so the existing snapshot/MQTT raw path still receives `raw_bytes`; bladeRF mode keeps original `Receiver.receive_with_raw()` bytes.
+8. `plotter_process` renders BMP spectrograms under `BKDATASET/`, runs ResNet18 inference if model loads, and sends `sdr_classify` results.
+9. If jamming is detected above `SDR_JAMMING_CONFIDENCE_THRESHOLD`, it saves a bounded raw snapshot under `output_sdr/` and attaches an MQTT event.
+10. SDR MQTT worker publishes event-driven outputs only when a threat snapshot exists:
    - `detect/sdr/v1`
    - chunked `raw/sdr/v1`
-8. `templates/sdr.html` listens for `sdr_classify`; it separately polls `/sdr/latest_bmp` every 500 ms for the latest BMP.
+11. `templates/sdr.html` listens for `sdr_classify`; it separately polls `/sdr/latest_bmp` every 500 ms for the latest BMP.
 
 ## Change Guide
 
@@ -156,6 +161,11 @@ Last source review: 2026-06-15.
   - read `docs/sdr-flow-analysis.md` first;
   - decide whether runtime or `SDR/README_bladerf_integration.md` is authoritative;
   - update `thread/SDRThread.py`, `SDR/README_bladerf_integration.md`, and tests/docs together.
+- If changing USRP X300 ingest:
+  - edit `config.py` for `SDR_SOURCE`, `SDR_USRP_*`, and SDR rate/frequency/gain/bandwidth defaults;
+  - edit `thread/SDRThread.py::UhdUsrpReceiverSource`;
+  - validate adapter behavior with `tests/test_usrp_sdr_source.py`;
+  - hardware-smoke on RK3588 with UHD installed and `uhd_find_devices --args "addr=192.168.5.111"`.
 - If fixing frontend Socket.IO host:
   - edit `templates/index.html` at the `io("http://192.168.5.2:5000")` call;
   - prefer same-origin `io()` unless cross-host behavior is required.
@@ -167,6 +177,8 @@ Last source review: 2026-06-15.
 
 - Full available unit suite:
   - `python3 -m unittest discover -s tests -v`
+- USRP SDR adapter tests:
+  - `python3 -m unittest discover -s tests -p 'test_usrp_sdr_source.py' -v`
 - RAM queue helper tests:
   - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v`
 - MQTT schema/publisher/subscriber tests:
@@ -184,7 +196,13 @@ Last source review: 2026-06-15.
   - `python log.py`
   - `bash record_ubx.sh`
   - `python send_command.py`
-- SDR hardware tests require bladeRF hardware and dependencies:
+- USRP hardware smoke requires UHD Python bindings and reachable X300:
+  - `uhd_find_devices --args "addr=192.168.5.111"`
+  - `uhd_usrp_probe --args "addr=192.168.5.111"`
+  - If probe warns that UDP socket buffers are too small, configure at least the reported minimum; Ettus X3x0 docs recommend `sudo sysctl -w net.core.rmem_max=33554432` and `sudo sysctl -w net.core.wmem_max=33554432` before sustained streaming.
+  - Verified RK3588/X300 probe evidence: after setting `net.core.wmem_max=33554432`, probe completed with `FPGA Version: 36.0`, detected UBX-40 v2 RX/TX daughterboards, and reported fixed RX bandwidth `40000000.0 Hz`.
+  - `python app.py`
+- Legacy bladeRF hardware tests require bladeRF hardware and dependencies:
   - `python -m pytest SDR/tests/test_bladerf.py`
   - `python SDR/examples/receive_loop.py`
 
@@ -205,7 +223,7 @@ Last source review: 2026-06-15.
 - Observability:
   - `app.py` creates `all.log` and `mqtt.log`.
   - GNSS runtime uses Python logging.
-  - SDR worker processes still use several `print()` calls.
+- SDR worker processes log reader/plotter/classifier startup and errors through structured logging to `all.log`.
 - Backpressure:
   - Ingress queue uses drop-new in `ReadSerial._enqueue_with_backpressure()`.
   - Detect/raw/MQTT publish queues use drop-oldest helper in `SocketThread`.
@@ -213,6 +231,9 @@ Last source review: 2026-06-15.
 - Security:
   - `.env`, `cookies.txt`, and `login.txt` exist. Treat as sensitive.
   - `app.py` protects `/sdr/bmp/<filename>` against `..` and requires `.bmp`, then serves by basename from `BKDATASET/`.
+- SDR source:
+  - default is `usrp_x300` at `192.168.5.111`;
+  - legacy bladeRF can be restored with `SDR_SOURCE=bladerf`.
 - Vendor/source boundaries:
   - `SDR/bladeRF/` is vendor/submodule scale code, not normal app source.
   - Do not refactor vendor code unless requested.
@@ -221,12 +242,12 @@ Last source review: 2026-06-15.
 
 - `thread/SocketThread.py` is high-blast-radius: queues, detector execution, Socket.IO, MQTT, command subscriber state, and metrics all meet here.
 - `draws/UbloxChart.py` mixes parsing, plotting, sleeps, prints, numeric algorithm, and spoofing decision.
-- `thread/SDRThread.py` mixes hardware ingest, model definition, inference, rendering, snapshot storage, Socket.IO, and MQTT.
+- `thread/SDRThread.py` mixes SDR source adapters, model definition, inference, rendering, snapshot storage, Socket.IO, and MQTT.
 - `telemetry/mqtt_schema.py::build_ublox_command_message()` likely has a `NameError` because `topic_prefix` is referenced but not accepted as an argument.
 - `RealtimeSpoofingPipeline.set_reference_svid()` stores `_reference_svid`, but current builders choose their own lowest common SVID and do not use that override.
 - `RealtimeSpoofingPipeline.set_min_sat_count()` stores `_min_sat_count`, but current detector engines use their own `min_cluster_size` value.
 - `templates/index.html` hardcodes Socket.IO host and still labels raw queue as durable.
-- SDR runtime and SDR integration guide disagree on sample rate, preprocessing, colormap, normalization, and class labels.
+- SDR runtime and SDR integration guide still disagree on preprocessing, colormap, normalization, and class labels; runtime now at least consumes `config.py` rate/frequency/gain/bandwidth.
 - `requirements.txt` appears to be an environment freeze, not a minimal dependency manifest.
 
 ## Unknowns
@@ -234,5 +255,6 @@ Last source review: 2026-06-15.
 - Unknown: validation basis for `draws/UbloxChart.py` slope threshold `delta_a = 0.0001`.
 - Unknown: exact required u-blox receiver message-rate configuration for reliable `RXM-RAWX`, `NAV-PVT`, `NAV-SAT`, and `MON-SPAN` streams.
 - Unknown: authoritative SDR model contract: live runtime vs `SDR/README_bladerf_integration.md`.
+- Unknown: exact UHD/FPGA/network tuning needed for sustained USRP X300 streaming on the deployed RK3588 interface; the repo dev environment used for this review did not have `uhd` installed.
 - Unknown: whether default MQTT credentials in `config.py` are intended for local testing only.
 - Inference: the project is a research/prototype runtime with production-facing telemetry contracts, not yet a fully hardened production service.

@@ -28,7 +28,7 @@ Last source review: 2026-06-15.
    - `epoch_pair` -> detect queue.
 6. `SocketThread.detect_consumer_thread()` runs `RealtimeSpoofingPipeline`, publishes MQTT detect/state messages, and emits Socket.IO `update_image`.
 7. `SocketThread.raw_consumer_thread()` batches raw UBX frames for Socket.IO `raw_data_batch`, publishes raw UBX over MQTT through a dedicated worker queue, and periodically publishes `health/v1`.
-8. If `config.SDR_ENABLED` is true, `thread/SDRThread.py` starts bladeRF reader/plotter processes plus result/MQTT worker threads.
+8. If `config.SDR_ENABLED` is true, `thread/SDRThread.py` starts SDR reader/plotter processes plus result/MQTT worker threads.
 
 ## Main Data Contracts
 
@@ -78,15 +78,23 @@ Last source review: 2026-06-15.
 ## Jamming / SDR Truth
 
 - `thread/SDRThread.py` is the runtime SDR path used by `app.py`.
-- It imports torch and bladeRF wrapper at module import time, so missing SDR dependencies can break `app.py` import even if `SDR_ENABLED` is false.
-- Current runtime hardcodes major SDR parameters in `thread/SDRThread.py`:
-  - sample rate `60e6`
-  - center frequency `1575.42e6`
-  - gain `20`
-  - frame assembly `8 * 8192`
+- Current default SDR source is USRP X300 over Ethernet:
+  - `SDR_SOURCE=usrp_x300`
+  - `SDR_USRP_ADDR=192.168.5.111`
+  - `SDR_USRP_ARGS=addr=192.168.5.111`
+- `thread/SDRThread.py` uses UHD Python API lazily for USRP mode, so `app.py` can import without `uhd` installed; runtime startup with `SDR_SOURCE=usrp_x300` still requires UHD with Python bindings on the RK3588 host.
+- Legacy bladeRF remains available by setting `SDR_SOURCE=bladerf`.
+- Current SDR runtime parameters come from `config.py`:
+  - sample rate `SDR_SAMPLE_RATE`
+  - center frequency `SDR_FREQ`
+  - gain `SDR_GAIN`
+  - bandwidth `SDR_BANDWIDTH`
+  - chunk size `SDR_NUM_SAMPLES`
+  - frame assembly `8 * SDR_NUM_SAMPLES`
   - Hann STFT window `512`, overlap `384`, FFT `512`
   - custom colormap and 640x480 BMP output
-- `config.py` also defines SDR env settings (`SDR_SAMPLE_RATE=5e6`, `SDR_GAIN=30`, etc.), but the live `SDRThread` constants do not use those values except device/snapshot/MQTT controls.
+- USRP receive uses `uhd.usrp.MultiUSRP(SDR_USRP_ARGS)`, configures RX rate/frequency/gain/optional antenna, creates `StreamArgs("fc32", "sc16")`, and reconstructs interleaved int16 raw bytes from received `complex64` samples so the old snapshot/MQTT path still gets `raw_bytes`.
+- For X300 with UBX-40 v2, `uhd_usrp_probe` reported RX bandwidth fixed at `40000000.0 Hz`; runtime therefore does not call UHD `set_rx_bandwidth()` by default. Set `SDR_USRP_SET_BANDWIDTH=1` only when using a daughterboard/configuration that accepts the requested bandwidth.
 - `docs/sdr-flow-analysis.md` records a model-contract mismatch between `thread/SDRThread.py` and `SDR/README_bladerf_integration.md`. Treat SDR classifier output as unverified until the model preprocessing contract is reconciled.
 
 ## Configuration Defaults
@@ -103,6 +111,16 @@ Last source review: 2026-06-15.
   - `RAM_RAW_QUEUE_SIZE=500000`
   - `RAM_RAW_MQTT_QUEUE_SIZE=200000`
 - MQTT is enabled by default in `config.py` and has default broker credentials. Do not expose or copy secrets from `.env`.
+- SDR defaults:
+  - `SDR_SOURCE=usrp_x300`
+  - `SDR_USRP_ADDR=192.168.5.111`
+  - `SDR_USRP_ARGS=addr=192.168.5.111`
+  - `SDR_SAMPLE_RATE=5e6`
+  - `SDR_FREQ=1575.42e6`
+  - `SDR_GAIN=30`
+  - `SDR_BANDWIDTH=2.5e6`
+  - `SDR_USRP_SET_BANDWIDTH=False`
+  - `SDR_NUM_SAMPLES=8192`
 - Realtime default thresholds:
   - `SOS_CARRIER_THRESHOLD=0.04`
   - `SOS_SMOOTHED_PSEUDORANGE_THRESHOLD=1.10`
@@ -115,12 +133,26 @@ Last source review: 2026-06-15.
 - Deterministic tests present:
   - `tests/test_ram_queue_flow.py`
   - `tests/test_mqtt_telemetry.py`
-  - `tests/test_generate_drawio_diagrams.py`
+  - `tests/test_usrp_sdr_source.py`
+- RK3588 / USRP X300 hardware evidence from operator logs:
+  - `python3 -c "import uhd; print('UHD Python OK')"` passed on the RK3588 host.
+  - `uhd_find_devices --args "addr=192.168.5.111"` found USRP X300 serial `32244B4`, FPGA flavor `HG`, UHD host `3.15.0.0-2build5`.
+  - Initial `uhd_usrp_probe --args "addr=192.168.5.111"` failed with FPGA compatibility mismatch: host expected `36`, device had `39`.
+  - After downloading UHD images and running `sudo /usr/bin/uhd_image_loader --args="type=x300,addr=192.168.5.111,configure"`, `uhd_usrp_probe --args "addr=192.168.5.111"` no longer failed on compatibility and initialized X300 blocks.
+  - Current remaining probe warning is Linux UDP send buffer size: target `2426666`, actual `1048576`; UHD prints `sudo sysctl -w net.core.wmem_max=2426666` as the immediate minimum.
+  - Ettus X3x0 host configuration docs recommend setting both `net.core.rmem_max=33554432` and `net.core.wmem_max=33554432` for high-rate Ethernet streaming.
+  - After `sudo sysctl -w net.core.wmem_max=33554432`, `uhd_usrp_probe --args "addr=192.168.5.111"` completed successfully and reported `FPGA Version: 36.0`, X300 serial `32244B4`, two UBX-40 v2 RX daughterboards, antennas `TX/RX`, `RX2`, `CAL`, RX frequency range `10 MHz` to `6000 MHz`, PGA0 gain range `0.0` to `31.5 dB`, and RX bandwidth range fixed at `40000000.0 Hz`.
+  - Runtime evidence from `all.log` on `2026-06-15`: `SDR pipeline started`, `sdr_mqtt_worker_started`, and browser polling `/sdr/latest_bmp`, but no new `BKDATASET/*.bmp` or `output_sdr/*` after `2026-06-05`; this indicates reader/plotter produced no frames in that run.
+  - Runtime evidence from `all.log` after child-process logging was added: `sdr_reader_process_error` was caused by UHD Python `set_rx_freq()` rejecting a plain float. UHD 3.15 Python binding on RK3588 reports supported signature `(tune_request, chan=0)`, so USRP frequency tuning now uses `uhd.types.TuneRequest(CENTER_FREQ)`.
+  - Latest operator grep output after the `TuneRequest` fix shows the USRP path starting successfully on `2026-06-15 06:46`: `sdr_source_started source=usrp_x300 args=addr=192.168.5.111`, followed by `sdr_reader_started source=usrp_x300`.
+  - The same run produced new spectrogram BMPs under `BKDATASET/` through at least `2026-06-15 06:47:20`, including `BKDATASET/20260615_064720_694551_000038.bmp`; this proves the reader-to-plotter-to-UI image path is active.
+  - Remaining SDR runtime warnings in that run are `usrp_rx_metadata_error error=rx_metadata_error_code.overflow` and repeated `sdr_reader_queue_drop`; these indicate streaming/backpressure loss, not total SDR startup failure.
+  - No new `sdr_detect_published` line was present in the latest SDR grep output after `06:46`; SDR MQTT detect/raw publication is still expected only when the classifier emits a non-clean jamming event above threshold and snapshot finalization completes.
 - Useful validation commands:
   - `python3 -m unittest discover -s tests -v`
   - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v`
   - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v`
-  - `python3 -m unittest discover -s tests -p 'test_generate_drawio_diagrams.py' -v`
+  - `python3 -m unittest discover -s tests -p 'test_usrp_sdr_source.py' -v`
   - `python3 realtime/test_runner.py`
 - Hardware/manual commands:
   - `python app.py`
@@ -139,6 +171,10 @@ Last source review: 2026-06-15.
 - `SocketThread` catches broad exceptions in router/detect/raw loops; check `all.log` and `mqtt.log` before patching.
 - `.env`, `cookies.txt`, and `login.txt` exist in the repo. Treat as sensitive; do not print contents.
 - `requirements.txt` is not a minimal project dependency list; it includes many unrelated environment packages.
+- UHD is installed on the RK3588 host per operator log; the local/dev environment used for the source review may still lack UHD (`import uhd` previously failed there).
+- Before sustained USRP X300 streaming on RK3588, increase Linux UDP socket buffers; use Ettus X3x0 recommendation `net.core.rmem_max=33554432` and `net.core.wmem_max=33554432` unless constrained by the host OS.
+- SDR MQTT is event-driven in current runtime: `detect/sdr/v1` and `raw/sdr/v1` are published only when the classifier detects a non-`Clean`/non-`Unknown` jamming state above `SDR_JAMMING_CONFIDENCE_THRESHOLD` and the snapshot finalizes. UI spectrogram/classifier updates should still appear continuously if reader and plotter are producing frames.
+- For UHD Python 3.15 on RK3588, keep USRP RX frequency tuning through `TuneRequest`; direct `set_rx_freq(float, channel)` fails.
 - The source tree includes huge vendor/build areas (`SDR/bladeRF/`, `venv/`, generated output dirs). Do not treat those as primary application source unless explicitly working on bladeRF vendor integration.
 - `git status --short` currently shows untracked vendor subtrees:
   - `SDR/bladeRF/host/utilities/bladeRF-fsk/`
