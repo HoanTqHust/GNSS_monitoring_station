@@ -21,7 +21,11 @@ logs/*
 __pycache__/
 output/
 output_rt/
-.env*
 *.log
 BKDATASET/
 output_sdr/
+
+# Local secrets / runtime environment
+.env
+.env.*
+!.env.example

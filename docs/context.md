@@ -199,6 +199,7 @@ Last source review: 2026-06-15.
 - `ReadSerial.read_serial()` catches broad exceptions and continues forever; logs are required before changing behavior.
 - `SocketThread` catches broad exceptions in router/detect/raw loops; check `all.log` and `mqtt.log` before patching.
 - `.env`, `cookies.txt`, and `login.txt` exist in the repo. Treat as sensitive; do not print contents.
+- On `2026-06-15`, `.env` was removed from Git tracking with `git rm --cached .env` and `.gitignore` was tightened to ignore `.env`/`.env.*` while allowing `.env.example`. Commit and push that staged deletion to remove `.env` from the GitHub remote tip; rotate any secrets that were already pushed because normal deletion does not erase Git history.
 - `requirements.txt` is not a minimal project dependency list; it includes many unrelated environment packages.
 - UHD is installed on the RK3588 host per operator log; the local/dev environment used for the source review may still lack UHD (`import uhd` previously failed there).
 - Before sustained USRP X300 streaming on RK3588, increase Linux UDP socket buffers; use Ettus X3x0 recommendation `net.core.rmem_max=33554432` and `net.core.wmem_max=33554432` unless constrained by the host OS.
