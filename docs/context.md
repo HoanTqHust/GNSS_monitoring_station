@@ -110,7 +110,21 @@ Last source review: 2026-06-15.
   - `RAM_DETECT_QUEUE_SIZE=200000`
   - `RAM_RAW_QUEUE_SIZE=500000`
   - `RAM_RAW_MQTT_QUEUE_SIZE=200000`
-- MQTT is enabled by default in `config.py` and has default broker credentials. Do not expose or copy secrets from `.env`.
+- MQTT is enabled by default in `config.py`; device identity now defaults to `device_<mac_suffix>` and `MQTT_USERNAME` must equal `MQTT_DEVICE_ID` for the EMQX per-device ACL. `MQTT_PASSWORD` has no code fallback and must be provisioned through environment/local config. Do not expose or copy secrets from `.env`.
+- MQTT identity defaults:
+  - `MQTT_DEVICE_MAC_INTERFACE=""` (auto-select first usable non-loopback interface)
+  - `MQTT_DEVICE_MAC_SUFFIX_LENGTH=4`
+  - `MQTT_DEVICE_ID=device_<last 4 MAC hex chars>` unless explicitly set
+  - `MQTT_USERNAME=MQTT_DEVICE_ID` unless explicitly set to the same value
+  - `MQTT_PASSWORD=""`; MQTT publisher/subscriber settings reject empty password when MQTT is enabled
+- EMQX device account provisioning is automated by `scripts/provision_emqx_device.py`:
+  - uses EMQX REST API credentials from `EMQX_API_BASE_URL`, `EMQX_API_KEY`, and `EMQX_API_SECRET`;
+  - targets the built-in database authenticator by default: `password_based:built_in_database`;
+  - creates or, with `--update-existing`, rotates the MQTT user whose username equals `device_id`;
+  - writes only device-scoped runtime credentials to `.env` when invoked with `--write-env`;
+  - must not leave EMQX admin/API credentials on deployed RK3588 devices after provisioning.
+- `scripts/provision_current_device.sh` is the operator-friendly wrapper for provisioning the current RK3588. It prompts for EMQX API key/secret when not exported, calls `scripts/provision_emqx_device.py`, updates `.env`, and does not store admin API credentials in source.
+- `scripts/provision_emqx_device.py` inserts the repository root into `sys.path` at startup so it can be executed directly as `python3 scripts/provision_emqx_device.py` without `PYTHONPATH`.
 - SDR defaults:
   - `SDR_SOURCE=usrp_x300`
   - `SDR_USRP_ADDR=192.168.5.111`
@@ -133,6 +147,8 @@ Last source review: 2026-06-15.
 - Deterministic tests present:
   - `tests/test_ram_queue_flow.py`
   - `tests/test_mqtt_telemetry.py`
+  - `tests/test_mqtt_device_identity.py`
+  - `tests/test_emqx_provisioning.py`
   - `tests/test_usrp_sdr_source.py`
 - RK3588 / USRP X300 hardware evidence from operator logs:
   - `python3 -c "import uhd; print('UHD Python OK')"` passed on the RK3588 host.
@@ -150,8 +166,11 @@ Last source review: 2026-06-15.
   - No new `sdr_detect_published` line was present in the latest SDR grep output after `06:46`; SDR MQTT detect/raw publication is still expected only when the classifier emits a non-clean jamming event above threshold and snapshot finalization completes.
 - Useful validation commands:
   - `python3 -m unittest discover -s tests -v`
+  - `MQTT_DEVICE_ID=device_abcd MQTT_USERNAME=device_abcd MQTT_PASSWORD=secret python3 -m unittest discover -s tests -v`
+  - `MQTT_DEVICE_ID=device_abcd MQTT_USERNAME=device_abcd MQTT_PASSWORD=secret python3 -m unittest discover -s tests -p 'test_emqx_provisioning.py' -v`
   - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v`
   - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v`
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_device_identity.py' -v`
   - `python3 -m unittest discover -s tests -p 'test_usrp_sdr_source.py' -v`
   - `python3 realtime/test_runner.py`
 - Hardware/manual commands:
@@ -164,6 +183,16 @@ Last source review: 2026-06-15.
 ## Important Findings / Risks
 
 - `telemetry/mqtt_schema.py::build_ublox_command_message()` references `topic_prefix` but does not accept it in the function signature. This is a likely bug if that helper is used.
+- MQTT security review on `2026-06-15` found the client implementation is still not security-complete: `config.py` defaults to `MQTT_PORT=1883`, `telemetry/mqtt_publisher.py` and `telemetry/mqtt_subscriber.py` call `username_pw_set()` but do not configure TLS, and command payloads are not signed or timestamp-window validated before mutating realtime detector state. The hardcoded password fallback was removed during per-device identity implementation.
+- Broker-side MQTT ACL/TLS settings were not present in the repository during the review; do not claim end-to-end MQTT security until the broker listener, TLS certificates, and per-topic ACLs are verified.
+- Per-device MQTT topic isolation cannot be guaranteed by RK3588/client code alone. It requires broker-enforced ACLs binding each authenticated device identity to only its own topic subtree, for example `gnss/<site_id>/<device_id>/...`; client-side topic validation and signed commands are defense-in-depth, not the primary access-control boundary.
+- Proposed MQTT identity model: derive default `device_id` at boot as `device_<mac_suffix>` from a stable network interface MAC suffix, then authenticate to EMQX as the same identity and enforce per-device topic access with EMQX ACL placeholders such as `${username}` or `${clientid}`. A 4-hex-character MAC suffix has collision risk; provisioning must detect duplicates or use more MAC characters/full MAC for stronger uniqueness.
+- EMQX account/ACL automation should run from a trusted provisioning service or operator script using EMQX REST API credentials, not from the RK3588 app with an admin API key. The device should receive only its own MQTT username/password or client certificate and its own topic-scoped config.
+- Do not store an EMQX admin account or REST API key on deployed RK3588 devices. If automatic MQTT account creation is required, implement a provisioning service that authenticates the device with a one-time bootstrap token or factory certificate, calls the EMQX REST API server-side, returns only the per-device MQTT credential, and writes that credential to a root-owned local config file.
+- `scripts/provision_emqx_device.py` is the current operator-side automation for this model. It can run on a trusted admin host or during controlled RK3588 setup, but the EMQX API key/secret must be unset/removed afterward; the long-lived application config should contain only `MQTT_DEVICE_ID`, `MQTT_USERNAME`, and `MQTT_PASSWORD`.
+- Use `scripts/provision_current_device.sh` for manual device provisioning when an operator has an EMQX API key/secret. Do not hardcode those admin credentials into scripts, `.env`, or committed files.
+- Recommended EMQX ACL shape is dynamic per-device authorization: match device MQTT usernames with a regex such as `^device_[0-9A-Fa-f]{4,12}$` and use topic placeholders like `gnss/+/${username}/raw/#`, `gnss/+/${username}/detect/#`, `gnss/+/${username}/state/#`, `gnss/+/${username}/health/#`, `gnss/+/${username}/cmd/init/v1`, `gnss/+/${username}/cmd/ack/v1`, and own command subscriptions. Do not keep a shared full-access MQTT user on deployed devices.
+- Device-side implementation now derives `MQTT_DEVICE_ID` from MAC when not explicitly set, validates `MQTT_TOPIC_PREFIX`/`MQTT_SITE_ID`/`MQTT_DEVICE_ID`, requires `MQTT_USERNAME == MQTT_DEVICE_ID`, and includes `MQTT_DEVICE_ID` in MQTT client IDs so multiple devices do not collide on broker sessions.
 - `templates/index.html` connects Socket.IO to fixed `http://192.168.5.2:5000` instead of the current host.
 - `templates/index.html` labels the raw panel as "Durable Queue", but current runtime is RAM queue based.
 - `draws/UbloxChart.py::process_ubx_data()` subtracts `dps[idx,1]` when any satellite exists; this is an index-based reference choice and may be fragile.

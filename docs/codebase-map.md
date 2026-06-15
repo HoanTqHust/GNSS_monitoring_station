@@ -24,7 +24,8 @@ Last source review: 2026-06-15.
 - `templates/`: browser UI for GNSS and SDR dashboards.
 - `SDR/src/`: legacy bladeRF RX/TX wrapper library.
 - `SDR/tests/`, `SDR/examples/`: hardware-oriented SDR utilities.
-- `tests/`: deterministic unit tests for RAM queue helpers and MQTT telemetry.
+- `tests/`: deterministic unit tests for RAM queue helpers, MQTT telemetry, MQTT identity, and EMQX provisioning helpers.
+- `scripts/`: operator utilities, including EMQX MQTT device-user provisioning.
 - `clone/`: batch/reference algorithm experiments for AOA/SoS/D3/smoothed pseudorange; not wired into live app.
 - `docs/`: core memory and analysis notes.
 - `README.md`: product/runtime architecture overview.
@@ -37,7 +38,7 @@ Last source review: 2026-06-15.
 | Module | Role | Key files | Edit here when | Depends on | Used by |
 | --- | --- | --- | --- | --- | --- |
 | Web bootstrap | Creates Flask app, routes, queues, background workers, logs | `app.py` | changing routes, startup, queue ownership, SDR startup, logging | `config.py`, `thread/*`, Flask, Socket.IO | operators, browsers |
-| Config | Centralizes env/defaults for ports, queues, thresholds, MQTT, SDR | `config.py` | changing runtime defaults or env names | `.env`, `os.environ` | all runtime modules |
+| Config | Centralizes env/defaults for ports, queues, thresholds, MAC-derived MQTT device identity, MQTT, SDR | `config.py` | changing runtime defaults, env names, or per-device MQTT identity rules | `.env`, `/sys/class/net`, `os.environ` | all runtime modules |
 | Serial ingest | Reads two u-blox receivers, parses UBX/NMEA, emits RAM events | `thread/ReadSerialThread.py`, `thread/RTKLIBStage.py` | changing serial ports, message parsing, event payload shape, TOW pairing | `serial`, `pyubx2`, `models`, `config.py` | `app.py`, `SocketThread.router_thread()` |
 | RAWX model | Wraps pyubx2 `RXM-RAWX` fields into simple objects | `models/RAWXData.py`, `models/SatelliteData.py` | adding/removing satellite fields consumed downstream | pyubx2 parsed object shape | serial ingest, realtime, plotting, MQTT schema |
 | RAM router / stream worker | Routes events, runs detect/raw consumers, emits Socket.IO, publishes MQTT | `thread/SocketThread.py` | changing queue policy, Socket.IO payloads, MQTT publication, metrics | `realtime`, `telemetry`, `draws`, `psutil`, queues | `app.py`, dashboards, MQTT subscribers |
@@ -50,8 +51,8 @@ Last source review: 2026-06-15.
 | SDR runtime | Captures IQ from USRP X300 over UHD or legacy bladeRF, renders BMP, runs classifier, emits UI result, publishes threat snapshot | `thread/SDRThread.py` | changing SDR source selection, jamming classifier runtime, snapshot logic, SDR MQTT publish, `/sdr` behavior | torch, PIL, matplotlib, UHD Python API or bladeRF wrapper, telemetry | `app.py`, `/sdr`, MQTT subscribers |
 | Legacy SDR wrapper | Minimal bladeRF RX/TX abstraction | `SDR/src/common.py`, `SDR/src/receiver.py`, `SDR/src/transmitter.py` | changing legacy bladeRF sync config or IQ conversion | `bladerf._bladerf`, NumPy | `SDRThread` when `SDR_SOURCE=bladerf`, SDR examples/tests |
 | Frontend UI | Shows GNSS plots/cards/raw table/summary chart and SDR spectrogram/classifier | `templates/index.html`, `templates/sdr.html`, `templates/about.html` | changing Socket.IO event handling, display fields, client endpoints | Socket.IO CDN, Chart.js CDN, Flask routes | browser users |
-| Tests | Deterministic helper/schema tests | `tests/test_ram_queue_flow.py`, `tests/test_mqtt_telemetry.py` | validating queue and MQTT changes | unittest, fake objects | developers/agents |
-| Ops utilities | Manual capture/config scripts | `log.py`, `record_ubx.sh`, `send_command.py`, `test.py`, `log_fake.py` | receiver configuration, raw UBX capture, local debug | serial, pyubx2 | operators |
+| Tests | Deterministic helper/schema tests | `tests/test_ram_queue_flow.py`, `tests/test_mqtt_telemetry.py`, `tests/test_mqtt_device_identity.py`, `tests/test_emqx_provisioning.py` | validating queue, MQTT schema, per-device MQTT identity, and EMQX provisioning changes | unittest, fake objects | developers/agents |
+| Ops utilities | Manual capture/config/provisioning scripts | `scripts/provision_current_device.sh`, `scripts/provision_emqx_device.py`, `log.py`, `record_ubx.sh`, `send_command.py`, `test.py`, `log_fake.py` | EMQX MQTT user provisioning, receiver configuration, raw UBX capture, local debug | EMQX REST API, serial, pyubx2 | operators |
 
 ## Interaction Map
 
@@ -154,6 +155,13 @@ Last source review: 2026-06-15.
   - edit `telemetry/mqtt_schema.py`;
   - update `tests/test_mqtt_telemetry.py`;
   - update `README_MQTT_DATA_SCHEMA_VI.md`.
+- If changing MQTT device identity or provisioning:
+  - edit `telemetry/mqtt_identity.py` for device ID derivation and validation rules;
+  - edit `config.py` only for runtime env/default wiring;
+  - edit `scripts/provision_emqx_device.py` for EMQX REST API user creation/rotation;
+  - edit `scripts/provision_current_device.sh` for operator-side wrapper behavior;
+  - update `tests/test_mqtt_device_identity.py` and `tests/test_emqx_provisioning.py`;
+  - never hardcode or print real `.env` secrets.
 - If changing MQTT commands:
   - edit `telemetry/mqtt_subscriber.py`;
   - add tests for `_build_command_topics()`, `_dispatch_command()`, `_on_message()`, and ACK output.
@@ -183,6 +191,12 @@ Last source review: 2026-06-15.
   - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v`
 - MQTT schema/publisher/subscriber tests:
   - `python3 -m unittest discover -s tests -p 'test_mqtt_telemetry.py' -v`
+- MQTT device identity tests:
+  - `python3 -m unittest discover -s tests -p 'test_mqtt_device_identity.py' -v`
+  - If the local `.env` still has legacy MQTT identity values, run with explicit test credentials: `MQTT_DEVICE_ID=device_abcd MQTT_USERNAME=device_abcd MQTT_PASSWORD=secret python3 -m unittest discover -s tests -p 'test_mqtt_device_identity.py' -v`
+- EMQX provisioning helper tests:
+  - `python3 -m unittest discover -s tests -p 'test_emqx_provisioning.py' -v`
+  - If the local `.env` still has legacy MQTT identity values, run with explicit test credentials: `MQTT_DEVICE_ID=device_abcd MQTT_USERNAME=device_abcd MQTT_PASSWORD=secret python3 -m unittest discover -s tests -p 'test_emqx_provisioning.py' -v`
 - Realtime synthetic smoke:
   - `python3 realtime/test_runner.py`
 - Main app:
@@ -230,6 +244,7 @@ Last source review: 2026-06-15.
   - SDR process queues use `put_nowait`; drops are logged in some paths.
 - Security:
   - `.env`, `cookies.txt`, and `login.txt` exist. Treat as sensitive.
+  - `scripts/provision_emqx_device.py` needs EMQX REST API credentials only during provisioning; deployed app runtime should keep only device-scoped MQTT credentials.
   - `app.py` protects `/sdr/bmp/<filename>` against `..` and requires `.bmp`, then serves by basename from `BKDATASET/`.
 - SDR source:
   - default is `usrp_x300` at `192.168.5.111`;

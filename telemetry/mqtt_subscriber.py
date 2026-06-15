@@ -28,13 +28,14 @@ class MqttSubscribeSettings:
     @classmethod
     def from_config(cls, app_config: Any, component: str) -> "MqttSubscribeSettings":
         client_prefix = str(getattr(app_config, "MQTT_CLIENT_ID_PREFIX", "gnss-subscriber"))
+        device_id = str(getattr(app_config, "MQTT_DEVICE_ID", "device_unknown"))
         return cls(
             enabled=bool(getattr(app_config, "MQTT_ENABLED", False)),
             host=str(getattr(app_config, "MQTT_HOST", "localhost")),
             port=int(getattr(app_config, "MQTT_PORT", 1883)),
             username=str(getattr(app_config, "MQTT_USERNAME", "")),
             password=str(getattr(app_config, "MQTT_PASSWORD", "")),
-            client_id=f"{client_prefix}-{component}-cmd",
+            client_id=f"{client_prefix}-{device_id}-{component}-cmd",
             qos=int(getattr(app_config, "MQTT_QOS", 1)),
             keepalive_s=int(getattr(app_config, "MQTT_KEEPALIVE_S", 60)),
             subscribe_timeout_s=float(getattr(app_config, "MQTT_SUBSCRIBE_TIMEOUT_S", 2.0)),

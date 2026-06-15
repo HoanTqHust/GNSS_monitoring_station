@@ -1,6 +1,17 @@
 import os
 from dotenv import load_dotenv
 
+from telemetry.mqtt_identity import (
+    find_primary_mac_address as _find_primary_mac_address,
+    mac_to_device_id as _mac_to_device_id,
+    normalize_mac_address as _normalize_mac_address,
+    read_mac_from_interface as _read_mac_from_interface,
+    resolve_mqtt_device_id as _resolve_mqtt_device_id,
+    resolve_mqtt_username as _resolve_mqtt_username,
+    validate_device_id as _validate_device_id,
+    validate_topic_segment as _validate_topic_segment,
+)
+
 load_dotenv()
 
 
@@ -70,12 +81,19 @@ class config:
     MQTT_ENABLED = _env_bool("MQTT_ENABLED", True)
     MQTT_HOST = os.environ.get("MQTT_HOST", "gnss.soict.io")
     MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
-    MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "rw_user")
-    MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "rw")
+    MQTT_DEVICE_MAC_INTERFACE = os.environ.get("MQTT_DEVICE_MAC_INTERFACE", "")
+    MQTT_DEVICE_MAC_SUFFIX_LENGTH = int(os.environ.get("MQTT_DEVICE_MAC_SUFFIX_LENGTH", 4))
+    MQTT_DEVICE_ID = _resolve_mqtt_device_id(
+        env_device_id=os.environ.get("MQTT_DEVICE_ID"),
+        mac_address=os.environ.get("MQTT_DEVICE_MAC"),
+        preferred_interface=MQTT_DEVICE_MAC_INTERFACE,
+        suffix_length=MQTT_DEVICE_MAC_SUFFIX_LENGTH,
+    )
+    MQTT_USERNAME = _resolve_mqtt_username(os.environ.get("MQTT_USERNAME"), MQTT_DEVICE_ID)
+    MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
     MQTT_CLIENT_ID_PREFIX = os.environ.get("MQTT_CLIENT_ID_PREFIX", "double-difference-cp")
-    MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "gnss")
-    MQTT_SITE_ID = os.environ.get("MQTT_SITE_ID", "default_site")
-    MQTT_DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", "test_device")
+    MQTT_TOPIC_PREFIX = _validate_topic_segment("MQTT_TOPIC_PREFIX", os.environ.get("MQTT_TOPIC_PREFIX", "gnss"))
+    MQTT_SITE_ID = _validate_topic_segment("MQTT_SITE_ID", os.environ.get("MQTT_SITE_ID", "default_site"))
     MQTT_QOS = int(os.environ.get("MQTT_QOS", 1))
     MQTT_KEEPALIVE_S = int(os.environ.get("MQTT_KEEPALIVE_S", 60))
     MQTT_PUBLISH_TIMEOUT_S = _env_float("MQTT_PUBLISH_TIMEOUT_S", 2.0)
