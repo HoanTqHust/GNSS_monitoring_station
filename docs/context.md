@@ -77,12 +77,17 @@ Last source review: 2026-06-15.
 
 ## Jamming / SDR Truth
 
-- `thread/SDRThread.py` is the runtime SDR path used by `app.py`.
+- `thread/SDRThread.py` is the runtime SDR pipeline used by `app.py`.
+- `sdr_sources/` owns SDR hardware source adapters:
+  - `sdr_sources.usrp_source.UhdUsrpReceiverSource`
+  - `sdr_sources.bladerf_source.BladeRfReceiverSource`
+  - `sdr_sources.factory.open_sdr_receiver_source()`
+- Both SDR source adapters expose `receive_with_raw(num_samples) -> (complex64 samples, SC16_Q11-compatible raw bytes)`, so spectrogram rendering, classifier inference, snapshot storage, UI, and MQTT publishing remain shared.
 - Current default SDR source is USRP X300 over Ethernet:
   - `SDR_SOURCE=usrp_x300`
   - `SDR_USRP_ADDR=192.168.5.111`
   - `SDR_USRP_ARGS=addr=192.168.5.111`
-- `thread/SDRThread.py` uses UHD Python API lazily for USRP mode, so `app.py` can import without `uhd` installed; runtime startup with `SDR_SOURCE=usrp_x300` still requires UHD with Python bindings on the RK3588 host.
+- `sdr_sources.usrp_source` imports UHD lazily for USRP mode, so `app.py` can import without `uhd` installed; runtime startup with `SDR_SOURCE=usrp_x300` still requires UHD with Python bindings on the RK3588 host.
 - Legacy bladeRF remains available by setting `SDR_SOURCE=bladerf`.
 - Current SDR runtime parameters come from `config.py`:
   - sample rate `SDR_SAMPLE_RATE`
@@ -117,6 +122,10 @@ Last source review: 2026-06-15.
   - `MQTT_DEVICE_ID=device_<last 4 MAC hex chars>` unless explicitly set
   - `MQTT_USERNAME=MQTT_DEVICE_ID` unless explicitly set to the same value
   - `MQTT_PASSWORD=""`; MQTT publisher/subscriber settings reject empty password when MQTT is enabled
+- Local/runtime env files:
+  - `.env` exists for this working tree and is ignored by Git.
+  - `.env` is configured for local smoke runs with `MQTT_ENABLED=0`, `SDR_ENABLED=1`, and `SDR_SOURCE=usrp_x300`.
+  - `.env.example` exists as the shareable template; it contains placeholders only and must not contain real MQTT passwords.
 - EMQX device account provisioning is automated by `scripts/provision_emqx_device.py`:
   - uses EMQX REST API credentials from `EMQX_API_BASE_URL`, `EMQX_API_KEY`, and `EMQX_API_SECRET`;
   - targets the built-in database authenticator by default: `password_based:built_in_database`;
@@ -180,6 +189,19 @@ Last source review: 2026-06-15.
   - `python log.py`
   - `bash record_ubx.sh`
 
+## SDR Source Adapter Refactor (2026-06-19)
+
+- Implemented the USRP/bladeRF source split as an adapter package:
+  - `sdr_sources/base.py`: `SdrSourceSettings` and `SdrReceiverSource` protocol.
+  - `sdr_sources/usrp_source.py`: UHD/X300 source.
+  - `sdr_sources/bladerf_source.py`: legacy bladeRF source.
+  - `sdr_sources/factory.py`: config mapping and `SDR_SOURCE` selector.
+- `thread/SDRThread.py` no longer owns device-specific source classes; `reader_process()` opens the configured source through `open_sdr_receiver_source()` and keeps emitting the same frame envelope to the shared plotter/classifier/MQTT path.
+- `tests/test_usrp_sdr_source.py` now validates the new source package directly, including SC16_Q11 byte conversion, USRP stream setup, bandwidth-skip default, and config-to-settings mapping.
+- Validation:
+  - `python3 -m py_compile sdr_sources/__init__.py sdr_sources/base.py sdr_sources/utils.py sdr_sources/bladerf_source.py sdr_sources/usrp_source.py sdr_sources/factory.py thread/SDRThread.py tests/test_usrp_sdr_source.py`
+  - `python3 -m unittest discover -s tests -p 'test_usrp_sdr_source.py' -v` -> `4 passed`
+
 ## Important Findings / Risks
 
 - `telemetry/mqtt_schema.py::build_ublox_command_message()` references `topic_prefix` but does not accept it in the function signature. This is a likely bug if that helper is used.
@@ -198,7 +220,7 @@ Last source review: 2026-06-15.
 - `draws/UbloxChart.py::process_ubx_data()` subtracts `dps[idx,1]` when any satellite exists; this is an index-based reference choice and may be fragile.
 - `ReadSerial.read_serial()` catches broad exceptions and continues forever; logs are required before changing behavior.
 - `SocketThread` catches broad exceptions in router/detect/raw loops; check `all.log` and `mqtt.log` before patching.
-- `.env`, `cookies.txt`, and `login.txt` exist in the repo. Treat as sensitive; do not print contents.
+- `.env`, `cookies.txt`, and `login.txt` are sensitive if present; do not print contents. Current checkout on 2026-06-19 has a local ignored `.env` plus a shareable `.env.example` with placeholders only.
 - On `2026-06-15`, `.env` was removed from Git tracking with `git rm --cached .env` and `.gitignore` was tightened to ignore `.env`/`.env.*` while allowing `.env.example`. Commit and push that staged deletion to remove `.env` from the GitHub remote tip; rotate any secrets that were already pushed because normal deletion does not erase Git history.
 - `requirements.txt` is not a minimal project dependency list; it includes many unrelated environment packages.
 - UHD is installed on the RK3588 host per operator log; the local/dev environment used for the source review may still lack UHD (`import uhd` previously failed there).

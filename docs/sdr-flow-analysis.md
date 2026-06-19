@@ -18,15 +18,17 @@ This note documents the current SDR runtime as implemented in the repository and
    - `reader_process`
    - `plotter_process`
    - one in-process result consumer thread
-4. `reader_process` opens the configured SDR source:
-   - default `SDR_SOURCE=usrp_x300`: UHD Python `uhd.usrp.MultiUSRP("addr=192.168.5.111")`
-   - legacy `SDR_SOURCE=bladerf`: `SDR/src/common.py::BladeRFSdr`
+4. `reader_process` opens the configured SDR source through `sdr_sources.factory.open_sdr_receiver_source()`:
+   - default `SDR_SOURCE=usrp_x300`: `sdr_sources.usrp_source.UhdUsrpReceiverSource`
+   - legacy `SDR_SOURCE=bladerf`: `sdr_sources.bladerf_source.BladeRfReceiverSource`
 5. In USRP mode, the source configures RX rate/frequency/gain/optional antenna, creates `StreamArgs("fc32", "sc16")`, starts continuous streaming, and calls `recv()` regularly so X300 UDP packets are drained by the RK3588 host.
    - UHD `set_rx_bandwidth()` is not called by default because the deployed X300 UBX-40 v2 probe reports fixed RX bandwidth `40000000.0 Hz`; set `SDR_USRP_SET_BANDWIDTH=1` only for hardware that accepts the requested bandwidth.
    - UHD `set_rx_freq()` is called with `uhd.types.TuneRequest(CENTER_FREQ)` because UHD Python 3.15 on RK3588 rejected direct `set_rx_freq(float, channel)`.
-6. In bladeRF mode, `Receiver.parse_samples()` converts interleaved int16 I/Q into `complex64` by dividing by `2048.0`.
+6. In bladeRF mode, `SDR/src/receiver.py::Receiver.parse_samples()` converts interleaved int16 I/Q into `complex64` by dividing by `2048.0`.
 7. `reader_process` accumulates 8 chunks of `SDR_NUM_SAMPLES` complex samples into one frame, throttled at about 0.1 seconds, then pushes the frame to the SDR queue.
-8. `reader_process` sends both normalized `complex64` samples and raw-byte-compatible data to the plotter queue. USRP mode reconstructs interleaved int16 bytes from `complex64` samples to keep the old snapshot/MQTT contract.
+8. `reader_process` sends both normalized `complex64` samples and raw-byte-compatible data to the plotter queue. The shared source contract is `receive_with_raw(num_samples) -> (complex64 samples, SC16_Q11-compatible raw bytes)`.
+   - USRP mode reconstructs interleaved int16 bytes from `complex64` samples to keep the snapshot/MQTT contract.
+   - bladeRF mode keeps original SC16_Q11 bytes from the bladeRF sync buffer.
 9. `plotter_process` drains frames, computes the spectrogram, renders a 640x480 RGB BMP, saves it into `BKDATASET/`, runs the PyTorch ResNet18 classifier if model loading succeeded, and pushes `{class, confidence, probs, frame_idx, filename}` into the result queue.
 10. When jamming is detected, `plotter_process` uses its raw-byte ring buffer to save a bounded snapshot under `SDR_SNAPSHOT_DIR` and attaches an MQTT event to the result queue.
 11. `SDRThread._mqtt_event_worker()` publishes the SDR detection result plus spectrum PNG base64 on `detect/sdr/v1`, then publishes chunked `.bin` data on `raw/sdr/v1`.
@@ -71,7 +73,7 @@ The previous runtime hardcoded `60e6`, gain `20`, and `8192 * 8` frame assembly.
 
 ## Reliability And Observability Gaps
 
-- `thread/SDRThread.py` imports `torch` at module import time. UHD and bladeRF imports are lazy, but runtime startup still requires the selected source dependency.
+- `thread/SDRThread.py` imports `torch` at module import time. `sdr_sources` imports UHD and bladeRF lazily, but runtime startup still requires the selected source dependency.
 - SDR queue overflow is silently ignored with broad `except Exception: pass` in both frame and result queues.
 - Reader/plotter worker startup and errors are now logged to `all.log`; older runs may only have child-process failures on stderr.
 - `BKDATASET/` receives one BMP per processed frame and has no retention policy.
@@ -83,7 +85,7 @@ The previous runtime hardcoded `60e6`, gain `20`, and `8192 * 8` frame assembly.
 
 Keep SDR decoupled from the GNSS UBX double-difference pipeline, but make it a first-class data source with explicit contracts:
 
-1. `sdr_ingest`: bladeRF init, RX config from `config.py`, SC16_Q11 -> complex64 conversion, capture metrics.
+1. `sdr_ingest`: source adapter init, RX config from `config.py`, source-specific IQ read, shared `(complex64, raw_bytes)` output contract, capture metrics.
 2. `sdr_features`: deterministic spectrogram/preprocess function that exactly matches the trained model contract.
 3. `sdr_detector`: model runtime adapter for PyTorch first, RKNN optional later, with versioned class mapping.
 4. `sdr_stream`: Socket.IO payload for UI plus MQTT payloads for `detect/sdr/v1` and chunked `raw/sdr/v1`.
