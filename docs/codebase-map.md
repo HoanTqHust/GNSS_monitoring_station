@@ -54,8 +54,8 @@ Last source review: 2026-06-15.
 | SDR source adapters | Selects and reads IQ from USRP X300 over UHD or legacy bladeRF behind one `receive_with_raw()` contract | `sdr_sources/*` | changing SDR hardware selection, USRP/bladeRF RX setup, source validation, raw-byte compatibility | UHD Python API or bladeRF wrapper, NumPy, `config.py` settings | `thread/SDRThread.py`, source tests |
 | Legacy SDR wrapper | Minimal bladeRF RX/TX abstraction | `SDR/src/common.py`, `SDR/src/receiver.py`, `SDR/src/transmitter.py` | changing legacy bladeRF sync config or IQ conversion | `bladerf._bladerf`, NumPy | `sdr_sources.bladerf_source`, SDR examples/tests |
 | Frontend UI | Shows GNSS plots/cards/raw table/summary chart and SDR spectrogram/classifier | `templates/index.html`, `templates/sdr.html`, `templates/about.html` | changing Socket.IO event handling, display fields, client endpoints | Socket.IO CDN, Chart.js CDN, Flask routes | browser users |
-| Tests | Deterministic helper/schema tests | `tests/test_ram_queue_flow.py`, `tests/test_mqtt_telemetry.py`, `tests/test_mqtt_device_identity.py`, `tests/test_emqx_provisioning.py` | validating queue, MQTT schema, per-device MQTT identity, and EMQX provisioning changes | unittest, fake objects | developers/agents |
-| Ops utilities | Manual capture/config/provisioning scripts | `scripts/provision_current_device.sh`, `scripts/provision_emqx_device.py`, `log.py`, `record_ubx.sh`, `send_command.py`, `test.py`, `log_fake.py` | EMQX MQTT user provisioning, receiver configuration, raw UBX capture, local debug | EMQX REST API, serial, pyubx2 | operators |
+| Tests | Deterministic helper/schema tests | `tests/test_ram_queue_flow.py`, `tests/test_mqtt_telemetry.py`, `tests/test_mqtt_device_identity.py`, `tests/test_emqx_provisioning.py`, `tests/test_ublox_dashboard_config.py` | validating queue, MQTT schema, per-device MQTT identity, EMQX provisioning, and u-blox command generation changes | unittest, fake objects | developers/agents |
+| Ops utilities | Manual capture/config/provisioning scripts | `scripts/configure_ublox_dashboard_messages.py`, `scripts/ublox_dashboard_config.py`, `scripts/provision_current_device.sh`, `scripts/provision_emqx_device.py`, `log.py`, `record_ubx.sh`, `send_command.py` | EMQX MQTT user provisioning, receiver output configuration, raw UBX capture, local debug | EMQX REST API, serial, pyubx2 | operators |
 
 ## Interaction Map
 
@@ -65,7 +65,7 @@ Last source review: 2026-06-15.
 2. `templates/index.html` loads Socket.IO and connects to `http://192.168.5.2:5000`.
 3. `app.py` starts `ReadSerial.read_serial()` in a multiprocessing process.
 4. `ReadSerial` reads `PORT1` and `PORT2` at 115200 baud.
-5. `RTKLIBStage.normalize_frame()` creates raw `ubx_frame` payloads.
+5. `ReadSerial._should_emit_raw_frame()` checks `RAW_UBX_ALLOWED_IDENTITIES`; allowed frames become raw `ubx_frame` payloads through `RTKLIBStage.normalize_frame()`.
 6. `RTKLIBStage.normalize_receiver_state()` stores latest `RXM-RAWX`, `NAV-PVT`, `NAV-SAT`, `MON-SPAN` per receiver.
 7. When both receivers have synchronized RAWX/NAV by rounded `rcvTow`, `RTKLIBStage.normalize_epoch_pair()` creates an `epoch_pair`.
 8. `SocketThread.router_thread()` routes:
@@ -142,6 +142,7 @@ Last source review: 2026-06-15.
 - If changing serial ingestion:
   - start with `thread/ReadSerialThread.py` and `thread/RTKLIBStage.py`;
   - keep `ubx_frame` and `epoch_pair` payload contracts aligned with `SocketThread` and `telemetry/mqtt_schema.py`;
+  - keep `RAW_UBX_ALLOWED_IDENTITIES` aligned with the dashboard-required identities unless full pass-through raw logging is explicitly needed;
   - validate with `tests/test_ram_queue_flow.py` and a hardware/manual run if serial behavior changes.
 - If changing queue reliability or metrics:
   - edit `SocketThread.create_metrics()`, `_put_with_drop_oldest()`, `_build_queue_stats()`, and raw/detect consumer paths together;
@@ -213,6 +214,9 @@ Last source review: 2026-06-15.
 - Manual UBX capture/config:
   - `python log.py`
   - `bash record_ubx.sh`
+  - `python3 scripts/configure_ublox_dashboard_messages.py --dry-run`
+  - `python3 scripts/configure_ublox_dashboard_messages.py --no-save`
+  - `python3 scripts/configure_ublox_dashboard_messages.py`
   - `python send_command.py`
 - USRP hardware smoke requires UHD Python bindings and reachable X300:
   - `uhd_find_devices --args "addr=192.168.5.111"`
@@ -229,6 +233,7 @@ Last source review: 2026-06-15.
 - Config/env:
   - `config.py` loads `.env` at import time.
   - `.env` is local/ignored; `.env.example` is the committed template and must use placeholders only.
+  - `RAW_UBX_ALLOWED_IDENTITIES` defaults to `RXM-RAWX,NAV-PVT,NAV-SAT,MON-SPAN`; use `*` only for pass-through raw logging.
   - MQTT is enabled by default.
   - SDR is enabled by default.
 - Auth:
@@ -273,7 +278,7 @@ Last source review: 2026-06-15.
 ## Unknowns
 
 - Unknown: validation basis for `draws/UbloxChart.py` slope threshold `delta_a = 0.0001`.
-- Unknown: exact required u-blox receiver message-rate configuration for reliable `RXM-RAWX`, `NAV-PVT`, `NAV-SAT`, and `MON-SPAN` streams.
+- Unknown: exact u-blox firmware coverage for every disabled message in `scripts/ublox_dashboard_config.py`; unsupported messages may be NAKed or ignored, but the target dashboard messages are still explicitly enabled afterward.
 - Unknown: authoritative SDR model contract: live runtime vs `SDR/README_bladerf_integration.md`.
 - Unknown: exact UHD/FPGA/network tuning needed for sustained USRP X300 streaming on the deployed RK3588 interface; the repo dev environment used for this review did not have `uhd` installed.
 - Unknown: whether default MQTT credentials in `config.py` are intended for local testing only.

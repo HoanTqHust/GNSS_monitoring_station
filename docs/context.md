@@ -21,7 +21,7 @@ Last source review: 2026-06-15.
    - shared metrics via `SocketThread.create_metrics()`.
 3. `thread/ReadSerialThread.py` runs in a separate process and reads two serial ports from `config.PORT1` and `config.PORT2`.
 4. `ReadSerial` uses `pyubx2.UBXReader` to parse UBX/NMEA and `thread/RTKLIBStage.py` to normalize:
-   - `ubx_frame` events for every parsed frame;
+   - `ubx_frame` events for parsed frames allowed by `RAW_UBX_ALLOWED_IDENTITIES`;
    - `epoch_pair` events when both receivers have `RXM-RAWX` and `NAV-PVT` with matching rounded `rcvTow`.
 5. `thread/SocketThread.py::router_thread()` fans out events:
    - `ubx_frame` -> raw queue;
@@ -126,6 +126,17 @@ Last source review: 2026-06-15.
   - `.env` exists for this working tree and is ignored by Git.
   - `.env` is configured for local smoke runs with `MQTT_ENABLED=0`, `SDR_ENABLED=1`, and `SDR_SOURCE=usrp_x300`.
   - `.env.example` exists as the shareable template; it contains placeholders only and must not contain real MQTT passwords.
+- Raw UBX stream filter:
+  - `RAW_UBX_ALLOWED_IDENTITIES` defaults to `RXM-RAWX,NAV-PVT,NAV-SAT,MON-SPAN`.
+  - The filter controls which parsed frames are emitted as `ubx_frame` into raw queue/UI/MQTT.
+  - `RTKLIBStage.normalize_receiver_state()` still runs before the filter, so required detect/dashboard state remains updated.
+  - Set `RAW_UBX_ALLOWED_IDENTITIES=*` only when full pass-through raw logging is required.
+- u-blox receiver output configuration:
+  - `scripts/configure_ublox_dashboard_messages.py` configures both `PORT1` and `PORT2` by default.
+  - The script sets USB protocol to UBX-only, disables known noisy NMEA/UBX messages, enables `RXM-RAWX`, `NAV-PVT`, `NAV-SAT`, and `MON-SPAN`, and saves to non-volatile memory unless `--no-save` is used.
+  - Use `python3 scripts/configure_ublox_dashboard_messages.py --dry-run` before writing to hardware.
+  - `scripts/ublox_dashboard_config.py` owns the tested UBX binary command plan.
+  - `send_command.py` is now a compatibility wrapper for `scripts/configure_ublox_dashboard_messages.py`.
 - EMQX device account provisioning is automated by `scripts/provision_emqx_device.py`:
   - uses EMQX REST API credentials from `EMQX_API_BASE_URL`, `EMQX_API_KEY`, and `EMQX_API_SECRET`;
   - targets the built-in database authenticator by default: `password_based:built_in_database`;
@@ -201,6 +212,47 @@ Last source review: 2026-06-15.
 - Validation:
   - `python3 -m py_compile sdr_sources/__init__.py sdr_sources/base.py sdr_sources/utils.py sdr_sources/bladerf_source.py sdr_sources/usrp_source.py sdr_sources/factory.py thread/SDRThread.py tests/test_usrp_sdr_source.py`
   - `python3 -m unittest discover -s tests -p 'test_usrp_sdr_source.py' -v` -> `4 passed`
+
+## Raw UBX Identity Filter (2026-06-19)
+
+- User selected the dashboard-sufficient identity set:
+  - `RXM-RAWX`
+  - `NAV-PVT`
+  - `NAV-SAT`
+  - `MON-SPAN`
+- Implemented software-side raw stream filtering:
+  - `config.py` adds `RAW_UBX_ALLOWED_IDENTITIES`, defaulting to the four identities above.
+  - `.env` and `.env.example` set `RAW_UBX_ALLOWED_IDENTITIES=RXM-RAWX,NAV-PVT,NAV-SAT,MON-SPAN`.
+  - `thread/ReadSerialThread.py` emits `ubx_frame` only for allowed identities.
+  - `RAW_UBX_ALLOWED_IDENTITIES=*` restores pass-through for every parsed identity.
+- This reduces application raw queue/UI/MQTT load, but does not reduce serial bandwidth from the u-blox receiver. Reducing receiver output still requires receiver-side UBX message configuration.
+- Validation:
+  - `python3 -m py_compile config.py thread/ReadSerialThread.py tests/test_ram_queue_flow.py`
+  - `python3 -m unittest discover -s tests -p 'test_ram_queue_flow.py' -v` -> `6 passed`
+  - `MQTT_DEVICE_ID=device_abcd MQTT_USERNAME=device_abcd MQTT_PASSWORD=secret python3 -m unittest discover -s tests -v` -> `42 passed`
+
+## u-blox Dashboard Message Configuration Script (2026-06-19)
+
+- Added hardware-side u-blox output configuration scripts:
+  - `scripts/ublox_dashboard_config.py`: pure UBX command builder with tested checksum/payload generation.
+  - `scripts/configure_ublox_dashboard_messages.py`: operator CLI for writing the command plan to serial receivers.
+  - `send_command.py`: legacy entrypoint wrapper for the new CLI.
+- Default command plan:
+  - set USB input/output protocol masks to UBX-only;
+  - disable common NMEA talker messages and observed noisy UBX groups such as `RXM-SFRBX`, extra `NAV-*`, `MON-*`, `SEC-*`, and `TIM-TP`;
+  - enable exactly the dashboard-required identities: `RXM-RAWX`, `NAV-PVT`, `NAV-SAT`, `MON-SPAN`;
+  - save current config unless `--no-save` is passed.
+- Safe preview command:
+  - `python3 scripts/configure_ublox_dashboard_messages.py --dry-run`
+- Non-persistent hardware write:
+  - `python3 scripts/configure_ublox_dashboard_messages.py --no-save`
+- Persistent hardware write:
+  - `python3 scripts/configure_ublox_dashboard_messages.py`
+- Validation:
+  - `python3 -m py_compile scripts/ublox_dashboard_config.py scripts/configure_ublox_dashboard_messages.py tests/test_ublox_dashboard_config.py`
+  - `python3 -m unittest discover -s tests -p 'test_ublox_dashboard_config.py' -v` -> `9 passed`
+  - `python3 scripts/configure_ublox_dashboard_messages.py --dry-run --no-save --ports /dev/test0 /dev/test1` -> completed without opening serial hardware.
+  - `python3 send_command.py --dry-run --no-save --ports /dev/test0` -> completed without opening serial hardware.
 
 ## Important Findings / Risks
 

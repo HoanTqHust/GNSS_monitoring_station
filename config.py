@@ -29,6 +29,17 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _env_csv_set(name: str, default: str):
+    value = os.environ.get(name)
+    text = default if value is None or value.strip() == "" else value
+    if text.strip() == "*":
+        return None
+    items = frozenset(item.strip() for item in text.split(",") if item.strip())
+    if not items:
+        raise ValueError(f"{name} must not be empty; use * to allow every identity")
+    return items
+
+
 class config:
      
     PORT1 = os.environ.get("PORT1", "/dev/ttyACM0")
@@ -61,6 +72,10 @@ class config:
 
     RAM_RAW_EMIT_BATCH_SIZE = int(os.environ.get("RAM_RAW_EMIT_BATCH_SIZE", 100))
     RAM_HEALTH_PUBLISH_INTERVAL = _env_float("RAM_HEALTH_PUBLISH_INTERVAL", 1.0)
+    RAW_UBX_ALLOWED_IDENTITIES = _env_csv_set(
+        "RAW_UBX_ALLOWED_IDENTITIES",
+        "RXM-RAWX,NAV-PVT,NAV-SAT,MON-SPAN",
+    )
 
     # Realtime detector test thresholds (to avoid perpetual "Pending").
     SOS_CARRIER_THRESHOLD = _env_float("SOS_CARRIER_THRESHOLD", 0.04)

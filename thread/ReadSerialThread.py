@@ -20,6 +20,14 @@ def _utc_now_iso() -> str:
 
 class ReadSerial:
     @staticmethod
+    def _should_emit_raw_frame(parsed_data: Any) -> bool:
+        allowed_identities = config.RAW_UBX_ALLOWED_IDENTITIES
+        if allowed_identities is None:
+            return True
+        identity = getattr(parsed_data, "identity", "UNKNOWN")
+        return identity in allowed_identities
+
+    @staticmethod
     def _is_synced_epoch(state1: dict[str, Any], state2: dict[str, Any]) -> bool:
         rawx1 = state1.get("rawx")
         rawx2 = state2.get("rawx")
@@ -75,7 +83,7 @@ class ReadSerial:
         state1: dict[str, Any] = {"rawx": None, "nav": None, "skyplot": "", "spectrum": ""}
         state2: dict[str, Any] = {"rawx": None, "nav": None, "skyplot": "", "spectrum": ""}
         seq_counter = 0
-        drop_stats = {"ingress_dropped": 0}
+        drop_stats = {"ingress_dropped": 0, "raw_filtered": 0}
 
         with serial.Serial(config.PORT1, baudrate=115200, timeout=1) as ser1, serial.Serial(
             config.PORT2, baudrate=115200, timeout=1
@@ -86,6 +94,10 @@ class ReadSerial:
                 config.PORT2,
                 config.RAM_INGRESS_QUEUE_SIZE,
             )
+            LOGGER.info(
+                "raw_ubx_filter_started allowed_identities=%s",
+                "*" if config.RAW_UBX_ALLOWED_IDENTITIES is None else ",".join(sorted(config.RAW_UBX_ALLOWED_IDENTITIES)),
+            )
             reader1 = UBXReader(ser1, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
             reader2 = UBXReader(ser2, protfilter=UBX_PROTOCOL | NMEA_PROTOCOL, validate=1)
 
@@ -94,16 +106,22 @@ class ReadSerial:
                     read1 = ReadSerial._consume_reader(reader1, "rx1", state1)
                     if read1 is not None:
                         raw_data_1, parsed_data_1 = read1
-                        frame_payload_1 = RTKLIBStage.normalize_frame("rx1", raw_data_1, parsed_data_1)
-                        seq_counter, event_1 = ReadSerial._next_event(seq_counter, "ubx_frame", frame_payload_1)
-                        ReadSerial._enqueue_with_backpressure(ingress_queue, event_1, drop_stats)
+                        if ReadSerial._should_emit_raw_frame(parsed_data_1):
+                            frame_payload_1 = RTKLIBStage.normalize_frame("rx1", raw_data_1, parsed_data_1)
+                            seq_counter, event_1 = ReadSerial._next_event(seq_counter, "ubx_frame", frame_payload_1)
+                            ReadSerial._enqueue_with_backpressure(ingress_queue, event_1, drop_stats)
+                        else:
+                            drop_stats["raw_filtered"] += 1
 
                     read2 = ReadSerial._consume_reader(reader2, "rx2", state2)
                     if read2 is not None:
                         raw_data_2, parsed_data_2 = read2
-                        frame_payload_2 = RTKLIBStage.normalize_frame("rx2", raw_data_2, parsed_data_2)
-                        seq_counter, event_2 = ReadSerial._next_event(seq_counter, "ubx_frame", frame_payload_2)
-                        ReadSerial._enqueue_with_backpressure(ingress_queue, event_2, drop_stats)
+                        if ReadSerial._should_emit_raw_frame(parsed_data_2):
+                            frame_payload_2 = RTKLIBStage.normalize_frame("rx2", raw_data_2, parsed_data_2)
+                            seq_counter, event_2 = ReadSerial._next_event(seq_counter, "ubx_frame", frame_payload_2)
+                            ReadSerial._enqueue_with_backpressure(ingress_queue, event_2, drop_stats)
+                        else:
+                            drop_stats["raw_filtered"] += 1
 
                     if ReadSerial._is_synced_epoch(state1, state2):
                         epoch_payload = RTKLIBStage.normalize_epoch_pair(state1, state2)

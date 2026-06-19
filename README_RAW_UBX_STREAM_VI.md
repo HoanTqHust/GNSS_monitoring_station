@@ -40,7 +40,7 @@ u-blox serial
 Trong code:
 
 1. `ReadSerial` đọc từng bản tin UBX từ `rx1`, `rx2`.
-2. Mỗi bản tin tạo event `ubx_frame`.
+2. Bản tin có `identity` nằm trong `RAW_UBX_ALLOWED_IDENTITIES` tạo event `ubx_frame`.
 3. Khi đồng bộ epoch (`RXM-RAWX` + `NAV-PVT` hai máy), tạo thêm event `epoch_pair`.
 4. Router tách event theo `event_type`.
 
@@ -89,6 +89,8 @@ Mỗi event trong ingress queue có dạng:
 - `tow_s`: GPS Time Of Week (giây), nếu bản tin có trường `rcvTow`; nếu không có thì `null`.
 - `raw_len`: độ dài frame nhị phân gốc (byte).
 - `raw_base64`: raw bytes encode base64 để có thể truyền qua socket/json.
+- Mặc định raw stream chỉ phát các identity trong `RAW_UBX_ALLOWED_IDENTITIES=RXM-RAWX,NAV-PVT,NAV-SAT,MON-SPAN`.
+- Đặt `RAW_UBX_ALLOWED_IDENTITIES=*` nếu cần pass-through mọi identity đã parse.
 
 ## 3.3 Payload của `epoch_pair` (detect path)
 
@@ -307,14 +309,20 @@ Các identity có logic xử lý rõ trong code:
 4. `MON-SPAN`
 - Lưu vào state `spectrum` để vẽ spectrum.
 
-## 6.2 Nhóm identity chỉ pass-through raw stream
+## 6.2 Nhóm identity bị lọc khỏi raw stream mặc định
 
 Các identity khác (ví dụ nhiều bản tin `NAV-*`, `MON-*`, `SEC-*`, `TIM-*`) hiện:
 
-- vẫn được ingest,
-- vẫn đi vào `raw_data_batch`,
-- vẫn được thống kê trong `Identity counts`,
-- nhưng không tham gia trực tiếp vào nhánh detect hiện tại (trừ khi bạn thêm logic).
+- vẫn được reader parse từ serial,
+- không đi vào `raw_data_batch`/raw MQTT nếu không nằm trong `RAW_UBX_ALLOWED_IDENTITIES`,
+- không xuất hiện trong `Identity counts` mặc định,
+- không tham gia trực tiếp vào nhánh detect hiện tại.
+
+Nếu cần raw forensic đầy đủ, đặt:
+
+```env
+RAW_UBX_ALLOWED_IDENTITIES=*
+```
 
 ---
 
